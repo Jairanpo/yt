@@ -13,48 +13,197 @@ Two ideas do the work:
    a CSP that forbids outbound requests. Thumbnails are cached server-side on
    first view. Once a video is on disk, watching it touches no network at all.
 
-## Requirements
+---
+
+## Install
 
 `yt-dlp`, `ffmpeg`, and Python 3.11+. No Python packages to install — the tool
 is stdlib-only, and shells out to `yt-dlp` so you can update it independently
-when an extractor breaks:
+when an extractor breaks.
 
 ```bash
-uv tool install yt-dlp     # or: pipx install yt-dlp
-uv tool upgrade yt-dlp     # when a download suddenly fails, do this first
+uv tool install yt-dlp        # or: pipx install yt-dlp
+sudo apt install ffmpeg       # needed to merge video+audio streams
+
+ln -s "$PWD/yt" ~/.local/bin/yt    # optional, drops the ./ prefix
+yt status                          # confirms yt-dlp is visible and prints paths
 ```
 
-## Getting started
+Everything below assumes `yt` is on your PATH. Otherwise use `./yt`.
+
+---
+
+## Your first five minutes
+
+**1. Track a channel.** Takes seconds and downloads nothing.
+
+```console
+$ yt add @3blue1brown
+resolving https://www.youtube.com/@3blue1brown/videos …
+added 3Blue1Brown — 151 videos catalogued (151 new). Nothing downloaded yet.
+```
+
+Accepts an `@handle`, a full channel URL, or a playlist URL. Add `--limit 20`
+to index only the newest 20 instead of the whole back catalogue.
+
+**2. See what's there.**
+
+```console
+$ yt list 3blue1brown -n 5
+○  GlYgs6v2YfU  2026-07-16     33:51  But what is cross-entropy? | Compression is Intelligenc…
+○  l6DKRf-fAAM  ~2026-07       32:20  Reinventing Entropy | Compression is Intelligence Part 1
+○  ldxFjLJ3rVY  ~2026-04       44:52  How (and why) to take a logarithm of an image
+○  fsLh-NYhOoU  ~2026-03     1:00:24  The most beautiful formula not enough people understand
+○  BHdbsHFs2P0  ~2026-02       29:40  Why you can't comb a hairy ball, and why we care
+
+5 shown · ● = on disk, ○ = catalog only
+```
+
+Reading a row: **`○`** catalog-only, **`●`** downloaded, **`★`** starred, then
+the video id, the date, the runtime, the title. A `~2026-04` date is a
+month-precision estimate — see [About the dates](#about-the-dates).
+
+**3. Download one.** By id, or by any distinctive part of the title.
+
+```console
+$ yt get "hairy ball"
+↓ [1/1] Why you can't comb a hairy ball, and why we care
+   ✓ 38.1MB  ~/Videos/yt/3Blue1Brown/2026-01-31 - Why_you_can_t_comb_a_hairy_ball [BHdbsHFs2P0].mp4
+```
+
+**4. Watch it.** Either in your player, or in the browser library.
 
 ```bash
-./yt add @3blue1brown          # catalog the channel — metadata only, seconds
-./yt list 3blue1brown -n 20    # see what's there
-./yt get "hairy ball"          # download the one you want, by title or id
-./yt serve                     # browse and watch at http://127.0.0.1:8420
+yt watch "hairy ball"    # opens mpv/vlc; downloads first if not on disk yet
+yt serve                 # web library at http://127.0.0.1:8420
 ```
 
-Put `yt` on your PATH (`ln -s "$PWD/yt" ~/.local/bin/yt`) to drop the `./`.
+---
 
-## Commands
+## Finding things
 
-| Command | What it does |
-| --- | --- |
-| `yt add <@handle\|url>` | Track a channel and catalog it. `--limit N` for just the newest N. |
-| `yt sync [channel]` | Refresh catalogs; never downloads. Cron-friendly. `--show-new` lists what appeared. |
-| `yt list [channel]` | Browse. `-q TEXT`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `-n N`. |
-| `yt get <id\|phrase>` | Download. Also `--starred` (everything starred), `--latest N`, `--audio`. |
-| `yt watch <id\|phrase>` | Play in mpv/vlc, downloading first if needed. |
-| `yt star <id\|phrase>` | Mark things to fetch later, then `yt get --starred`. |
-| `yt rm <id\|phrase>` | Delete the file, keep the catalog entry so you can re-fetch. |
-| `yt info <id\|phrase>` | Details. `--refresh` pulls exact metadata from YouTube. |
-| `yt status` | Counts, disk use, and it re-syncs the catalog with what's actually on disk. |
-| `yt serve` | The web library. `-p PORT`, `--no-open`. |
-| `yt channels` / `yt forget <ch>` | List / stop tracking. |
-| `yt config [--init]` | Show settings, or write a config file to edit. |
-| `yt block` | How to block youtube.com without breaking downloads. |
+Anywhere a video id is accepted you can type part of a title instead. Matching
+is case-insensitive across titles and descriptions. If the phrase is ambiguous
+the tool shows the candidates and stops rather than guessing:
 
-Anywhere an id is accepted you can type part of a title instead. If it's
-ambiguous the tool prints the candidates and stops rather than guessing.
+```console
+$ yt get "Laplace"
+3 matches — narrow it down or pass the id:
+  ●  FE-hM1kRK4Y  2025-11-05     23:05  Why Laplace transforms are so useful
+  ○  j0wJBEZdwLs  ~2025-11       34:41  But what is a Laplace Transform?
+  ○  -j8PzkZ70Lg  ~2025-11       27:49  The Physics of Euler's Formula | Laplace Transform Prel…
+```
+
+Either give more of the title (`yt get "Laplace transforms are"`) or paste the
+id. Multi-word phrases don't need quoting, but quoting avoids surprises with
+shell characters.
+
+Filters compose, so `yt list` is the main way to navigate a big catalogue:
+
+```bash
+yt list                              # newest 40 across every channel
+yt list veritasium -n 100            # one channel, more rows
+yt list -q "entropy"                 # text search
+yt list --downloaded                 # only what's on disk
+yt list --missing --starred          # starred but not yet fetched
+yt list --downloaded --unwatched     # your actual watch queue
+```
+
+---
+
+## Downloading
+
+```bash
+yt get <id|phrase>              # one video
+yt get --audio "interview"      # audio only, m4a — good for talks
+yt get --latest 3               # newest 3 not yet on disk, all channels
+yt get --latest 3 veritasium    # newest 3 from one channel
+yt get --starred                # everything you starred and haven't fetched
+```
+
+The **star-then-batch** pattern is the one worth building a habit around.
+Triage cheaply whenever you like, then fetch in one go:
+
+```bash
+yt list 3blue1brown -n 60        # skim
+yt star "cross-entropy"          # mark the keepers, no download yet
+yt star "logarithm of an image"
+yt get --starred                 # fetch them all when you're ready
+```
+
+Files land in `~/Videos/yt/<Channel>/<date> - <title> [<id>].mp4`, one folder
+per channel. Quality caps at 1080p by default and prefers mp4/m4a so the
+browser plays it without transcoding.
+
+Freeing space keeps your curation intact — `yt rm` deletes the file but never
+the catalog entry, so the video stays searchable and re-fetchable:
+
+```console
+$ yt rm "Laplace transforms are"
+about to delete ~/Videos/yt/3Blue1Brown/2025-11-05 - Why_Laplace… [FE-hM1kRK4Y].mp4 (28.0MB)
+proceed? [y/N] y
+removed — catalog entry kept, re-fetch any time with yt get
+```
+
+Add `-y` to skip the prompt.
+
+---
+
+## The web library
+
+```bash
+yt serve                 # opens your browser at http://127.0.0.1:8420
+yt serve -p 9000         # different port
+yt serve --no-open       # don't launch a browser
+```
+
+Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
+
+- **Search box** filters titles and descriptions as you type; the dropdown
+  narrows to one channel.
+- **Three chips** — Downloaded, Starred, Unwatched — combine with the search.
+- **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
+  reads **Watch** if the file is local and **Download** if it isn't; clicking
+  the thumbnail or title does the same thing. **☆** stars, **✕** deletes the
+  file (with a confirm) and keeps the catalog entry.
+- **Downloads** run in the background — queue as many as you like and progress
+  toasts appear bottom-right. Click a finished toast to dismiss it. You can
+  keep browsing and watching while they run.
+- **The player** opens over the page. Subtitles attach automatically when a
+  `.vtt` sidecar exists. Seeking works (media is served with HTTP Range).
+  Position is saved every five seconds and restored next time — cards show a
+  resume bar. Finishing a video marks it watched. **Esc** closes.
+
+---
+
+## Keeping up with new uploads
+
+`yt sync` re-indexes tracked channels. It only ever touches metadata:
+
+```console
+$ yt sync
+✓ 3Blue1Brown                          151 catalogued  +143 new
+✓ Veritasium                           412 catalogued   no change
+
+143 new video(s) across 2 channel(s).
+```
+
+Add `--show-new` to print the new titles, or a channel name to sync just one.
+Note that `sync` indexes the *whole* channel — if you first used
+`yt add --limit 20`, the catalogue will grow past 20. That's intended;
+metadata is nearly free.
+
+Nightly, via cron:
+
+```cron
+0 7 * * *  cd /path/to/repo && ./yt sync
+```
+
+To pull files down automatically too, chain a fetch — `./yt sync && ./yt get
+--latest 2` for the newest couple per run, or `./yt get --starred` if you'd
+rather stay in control of what lands on disk.
+
+---
 
 ## Blocking YouTube
 
@@ -71,23 +220,46 @@ block leaves this tool fully working:
 Do **not** block `googlevideo.com` (where media actually streams from) or
 `i.ytimg.com` (thumbnails) — that breaks downloads. `yt block` prints this too.
 
+---
+
 ## About the dates
 
 Flat channel listings carry no publish date. Asking yt-dlp to approximate one
 derives it from the "7 months ago" label, so the day-of-month is noise and the
-result can be weeks off. Those are shown as `~2026-07` — month precision, day
-withheld — and never as an exact date. A date becomes exact once the video is
-downloaded or you run `yt info --refresh`, at which point it displays in full
-and an approximation can no longer overwrite it.
+result can be weeks off — in testing, a `~2026-08` estimate turned out to be
+`2026-07-16`. Estimates therefore display as `~2026-07`, month precision with
+the day withheld, and never as an exact date.
 
-## Staying current
+A date becomes exact once the video is downloaded, or when you ask directly:
 
-```cron
-0 7 * * *  cd /path/to/repo && ./yt sync
+```bash
+yt info "cross-entropy" --refresh    # pulls exact metadata, prints the description
 ```
 
-That refreshes catalogs only. To auto-fetch as well, star what you care about
-and follow with `./yt get --starred`, or use `./yt get --latest 3 <channel>`.
+After that it displays in full, and a later approximation can't overwrite it.
+
+---
+
+## Command reference
+
+| Command | What it does |
+| --- | --- |
+| `yt add <@handle\|url>` | Track a channel and catalog it. `--limit N` for just the newest N. |
+| `yt sync [channel]` | Refresh catalogs; never downloads. `--show-new`, `--limit N`. |
+| `yt list [channel]` | Browse. `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`. |
+| `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--audio`. |
+| `yt watch <id\|phrase>` | Play in mpv/vlc, downloading first if needed. `--mark` marks it watched. |
+| `yt star <id\|phrase>` | Toggle a star. `--on` / `--off` to force. |
+| `yt rm <id\|phrase>` | Delete the file, keep the catalog entry. `-y` skips the prompt. |
+| `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |
+| `yt status` | Counts and disk use; also reconciles the catalog with what's on disk. |
+| `yt serve` | The web library. `-p PORT`, `--no-open`, `-v`. |
+| `yt channels` | List tracked channels with on-disk counts. |
+| `yt forget <channel>` | Stop tracking. Downloaded files stay on disk. `-y` skips the prompt. |
+| `yt config [--init]` | Show settings, or write a config file to edit. |
+| `yt block` | How to block youtube.com without breaking downloads. |
+
+---
 
 ## Config
 
@@ -98,16 +270,49 @@ and follow with `./yt get --starred`, or use `./yt get --latest 3 <channel>`.
 | `media_dir` | `~/Videos/yt` | One subdirectory per channel. |
 | `max_height` | `1080` | Prefers mp4/m4a so the browser plays it without transcoding. |
 | `sub_langs` | `en,es` | Keep these exact. `en.*` also matches every auto-translated track — dozens of requests per video and a quick 429 from YouTube. |
-| `port` | `8420` | |
+| `port` | `8420` | Used by `yt serve` unless `-p` overrides it. |
 | `player` | auto | mpv → vlc → xdg-open. |
-| `ytdlp_args` | `[]` | Appended to every call, e.g. `["--cookies-from-browser","firefox"]` for members-only videos. |
+| `ytdlp_args` | `[]` | Appended to every call, e.g. `["--cookies-from-browser","firefox"]`. |
 
-Catalog lives at `~/.local/share/ytlocal/catalog.db` — plain SQLite, query it
-directly if you want. Deleting a video file never deletes its catalog entry.
+`YTLOCAL_MEDIA`, `YTLOCAL_PORT`, `YTLOCAL_DATA`, and `YTLOCAL_CONFIG` override
+at the environment level — handy for running a throwaway second library.
+
+The catalog is plain SQLite at `~/.local/share/ytlocal/catalog.db`; query it
+directly if you want something the CLI doesn't offer.
+
+---
+
+## Troubleshooting
+
+**A download suddenly fails.** Upgrade yt-dlp first — YouTube changes break
+extractors regularly, and that's why it's a separate binary here:
+
+```bash
+uv tool upgrade yt-dlp
+```
+
+**`HTTP Error 429: Too Many Requests`.** You're being rate-limited. If you
+widened `sub_langs` to something like `en.*`, narrow it back — wildcards match
+every auto-translated track, which is dozens of requests per video. Otherwise
+wait a while, or add `["--sleep-requests","2"]` to `ytdlp_args`.
+
+**Members-only or age-restricted videos.** Point yt-dlp at your browser
+cookies via `ytdlp_args`: `["--cookies-from-browser","firefox"]`.
+
+**Files deleted outside the tool.** Run `yt status` — it reconciles the catalog
+with what's actually on disk and reports how many entries it cleared.
+
+**Port already in use.** `yt serve -p 9001`, or set `port` in the config.
+
+**Video won't play in the browser.** Rare, but a source with no mp4 variant can
+end up in a codec Firefox won't decode. `yt watch <id>` plays it in mpv
+regardless, which handles anything.
+
+---
 
 ## Notes
 
 Subtitles are fetched in a second, best-effort pass *after* the video lands, so
-a rate-limit on subtitles can't throw away a finished download. Media is served
-with HTTP Range support, so seeking works. Watch progress is saved every five
-seconds and restored when you reopen a video.
+a rate-limit on subtitles can't throw away a finished download. Deleting a
+video file never deletes its catalog entry. The catalog schema migrates itself
+in place, so pulling a newer version won't cost you your library.
