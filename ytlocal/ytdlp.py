@@ -38,9 +38,11 @@ def check(cfg: dict) -> str:
     return out.stdout.strip()
 
 
-def channel_url(ref: str) -> str:
-    """Normalise whatever the user typed into a channel /videos tab URL."""
+def source_url(ref: str) -> str:
+    """Normalise whatever the user typed into a URL we can page through."""
     ref = ref.strip()
+    if ref.startswith("PL") or ref.startswith("UU") or ref.startswith("OLAK"):
+        return f"https://www.youtube.com/playlist?list={ref}"
     if ref.startswith("@"):
         return f"https://www.youtube.com/{ref}/videos"
     if not ref.startswith("http"):
@@ -52,12 +54,23 @@ def channel_url(ref: str) -> str:
     return ref + "/videos"
 
 
-def sync_channel(cfg: dict, url: str, limit=None):
-    """Flat-list a channel. Returns (channel_meta, entries) ordered newest-first.
+# Kept as an alias: older call sites and muscle memory both say channel_url.
+channel_url = source_url
+
+
+def url_kind(url: str) -> str:
+    return "playlist" if "list=" in url else "channel"
+
+
+def sync_source(cfg: dict, url: str, limit=None):
+    """Flat-list a channel or playlist. Returns (meta, entries).
 
     Flat mode is one request per ~100 videos and carries no per-video cost, which
-    is what makes cataloguing a whole back catalogue cheap.
+    is what makes cataloguing a whole back catalogue cheap. Entries keep the
+    order the listing gave them: newest-first for a channel, curated order for
+    a playlist.
     """
+    kind = url_kind(url)
     cmd = base_cmd(cfg) + [
         "--flat-playlist", "--dump-json", "--ignore-errors",
         "--extractor-args", "youtubetab:approximate_date",
@@ -80,15 +93,29 @@ def sync_channel(cfg: dict, url: str, limit=None):
         if not _ID_RE.match(vid):
             continue
         if not meta:
-            # In flat mode YouTube puts the channel identity on the playlist_*
-            # keys; the per-entry channel_*/uploader_* keys come back as None.
-            meta = {
-                "channel_id": (e.get("channel_id") or e.get("playlist_channel_id")
-                               or e.get("playlist_id")),
-                "name": (e.get("channel") or e.get("playlist_channel")
-                         or e.get("playlist_uploader") or e.get("uploader")),
-                "handle": _handle_from(e),
-            }
+            # In flat mode YouTube puts the identity on the playlist_* keys; the
+            # per-entry channel_*/uploader_* keys come back as None. Note that
+            # for a playlist, playlist_channel_id is the *owning channel* --
+            # keying a playlist by it merges it into that channel.
+            if kind == "playlist":
+                meta = {
+                    "kind": "playlist",
+                    "source_id": e.get("playlist_id") or _list_id(url),
+                    "name": e.get("playlist_title") or e.get("playlist"),
+                    "owner": (e.get("playlist_channel") or e.get("playlist_uploader")
+                              or e.get("channel")),
+                    "handle": _handle_from(e),
+                }
+            else:
+                meta = {
+                    "kind": "channel",
+                    "source_id": (e.get("channel_id") or e.get("playlist_channel_id")
+                                  or e.get("playlist_id")),
+                    "name": (e.get("channel") or e.get("playlist_channel")
+                             or e.get("playlist_uploader") or e.get("uploader")),
+                    "owner": None,
+                    "handle": _handle_from(e),
+                }
         date = _fmt_date(e.get("upload_date"))
         entries.append({
             "id": vid,
@@ -107,9 +134,14 @@ def sync_channel(cfg: dict, url: str, limit=None):
         raise YtdlpError(
             f"no videos found at {url}\n{(proc.stderr or '').strip()[:800]}"
         )
-    if not meta.get("channel_id"):
-        meta["channel_id"] = url
+    if not meta.get("source_id"):
+        meta["source_id"] = _list_id(url) or url
     return meta, entries
+
+
+def _list_id(url: str):
+    m = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
+    return m.group(1) if m else None
 
 
 def _handle_from(entry: dict):
