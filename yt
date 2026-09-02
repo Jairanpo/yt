@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Run ytlocal straight from the repo, no install required.
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+export PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m ytlocal "$@"

@@ -1,0 +1,13 @@
+[project]
+name = "ytlocal"
+version = "0.1.0"
+description = "Catalog-first local mirror for YouTube channels you actually want to watch"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+yt = "ytlocal.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
