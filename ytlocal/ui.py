@@ -118,6 +118,7 @@ PAGE = r"""<!doctype html>
   <div class="brand">yt<span>·</span>local</div>
   <input type="search" id="q" placeholder="Search titles and descriptions…" autocomplete="off">
   <select id="src"><option value="">Everything</option></select>
+  <select id="sort" title="Sort order (remembered per view)"></select>
   <div class="chips">
     <button class="chip" id="f-have"      aria-pressed="false">Downloaded</button>
     <button class="chip" id="f-starred"   aria-pressed="false">Starred</button>
@@ -147,7 +148,8 @@ PAGE = r"""<!doctype html>
 
 <script>
 const state = { q:"", source:"", collection:"", have:null, starred:false,
-                unwatched:false, videos:[], ordered:false, collections:[] };
+                unwatched:false, videos:[], ordered:false, collections:[],
+                sort:"default" };
 const $ = s => document.querySelector(s);
 const fmtDur = s => { if(!s) return ""; s=Math.round(s);
   const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
@@ -181,7 +183,9 @@ async function refresh() {
   state.videos = d.videos;
   state.ordered = d.ordered;
   state.collections = d.collections;
+  state.sort = d.sort;
   buildPicker(d.sources, d.collections);
+  buildSorts(d.sorts, d.sort);
   const s = d.stats;
   $("#stats").textContent =
     `${s.have}/${s.total} on disk · ${fmtSize(s.bytes)} · ` +
@@ -214,6 +218,22 @@ function buildPicker(sources, colls) {
   group("Playlists", sources.filter(s => s.kind === "playlist"), "s:");
   group("Collections", colls, "c:");
   sel.value = keep;
+}
+
+function buildSorts(sorts, current) {
+  const sel = $("#sort");
+  if (!sel.options.length) {
+    for (const s of sorts) {
+      const o = document.createElement("option");
+      o.value = s.key; o.textContent = s.label;
+      sel.appendChild(o);
+    }
+  }
+  // The server decides which sort this view gets, so the dropdown follows it
+  // rather than the other way round -- switching source shows that view's own.
+  // Only when it actually differs: job polling refreshes every 1.2s and must
+  // not reach into a dropdown the user has open.
+  if (sel.value !== current) sel.value = current;
 }
 
 function render(vs) {
@@ -442,6 +462,12 @@ $("#src").addEventListener("change", e => {
   const v = e.target.value;
   state.source     = v.startsWith("s:") ? v.slice(2) : "";
   state.collection = v.startsWith("c:") ? v.slice(2) : "";
+  refresh();
+});
+$("#sort").addEventListener("change", async e => {
+  // Persisted against the view you were looking at when you chose it.
+  await post("/api/sort", {sort: e.target.value, source: state.source || null,
+                           collection: state.collection || null});
   refresh();
 });
 function toggle(id, key) {

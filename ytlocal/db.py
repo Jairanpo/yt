@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS collection_items (
     PRIMARY KEY (collection_id, video_id)
 );
 
+-- One remembered sort per view. scope is 'global', 'source:<id>' or
+-- 'collection:<id>'; a view with no row of its own falls back to global.
+CREATE TABLE IF NOT EXISTS view_prefs (
+    scope   TEXT PRIMARY KEY,
+    sort    TEXT NOT NULL,
+    set_at  INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sv_source  ON source_videos(source_id, position);
 CREATE INDEX IF NOT EXISTS idx_sv_video   ON source_videos(video_id);
 CREATE INDEX IF NOT EXISTS idx_ci_coll    ON collection_items(collection_id, rank);
@@ -71,6 +79,22 @@ CREATE INDEX IF NOT EXISTS idx_videos_have ON videos(downloaded_path);
 """
 
 PLAYLIST_RE = re.compile(r"[?&]list=([A-Za-z0-9_-]+)")
+
+# Sort keys, in the order a dropdown should offer them. "default" means the
+# order the view was built for -- curated for a playlist or collection,
+# newest-first everywhere else -- and is the only one that numbers its rows.
+# Every explicit sort puts unknowns (no date, no duration) last rather than
+# letting NULL sort first, and breaks ties on id so paging stays stable.
+SORTS = {
+    "default":  ("This view's own order", None),
+    "newest":   ("Newest first",  "(v.upload_date IS NULL), v.upload_date DESC"),
+    "oldest":   ("Oldest first",  "(v.upload_date IS NULL), v.upload_date ASC"),
+    "added":    ("Recently added", "v.first_seen DESC"),
+    "title":    ("Title A\u2013Z", "v.title COLLATE NOCASE ASC"),
+    "longest":  ("Longest first", "(v.duration IS NULL), v.duration DESC"),
+    "shortest": ("Shortest first", "(v.duration IS NULL), v.duration ASC"),
+}
+SORT_KEYS = list(SORTS)
 
 
 def connect() -> sqlite3.Connection:
@@ -236,6 +260,7 @@ def mark_synced(conn, sid: str) -> None:
 def delete_source(conn, sid: str) -> None:
     conn.execute("DELETE FROM source_videos WHERE source_id = ?", (sid,))
     conn.execute("DELETE FROM sources WHERE id = ?", (sid,))
+    conn.execute("DELETE FROM view_prefs WHERE scope = ?", (f"source:{sid}",))
     # Videos left in no source at all and never downloaded are noise.
     conn.execute(
         """DELETE FROM videos WHERE downloaded_path IS NULL AND starred = 0
@@ -311,9 +336,12 @@ def get_video(conn, vid: str):
 
 
 def query_videos(conn, source=None, collection=None, q=None, have=None,
-                 starred=None, unwatched=False, limit=None, offset=0) -> list:
+                 starred=None, unwatched=False, limit=None, offset=0,
+                 sort=None) -> list:
+    """Rows for one view. `sort` is a key from SORTS; None means "default"."""
     args, joins, where = [], "", []
     playlist_order = False
+    explicit = SORTS[sort][1] if sort and sort in SORTS else None
 
     if source:
         row = conn.execute("SELECT kind FROM sources WHERE id = ?", (source,)).fetchone()
@@ -340,7 +368,10 @@ def query_videos(conn, source=None, collection=None, q=None, have=None,
     if where:
         sql += " WHERE " + " AND ".join(where)
 
-    if collection:
+    if explicit:
+        # An explicit sort overrides curated order -- that is what it is for.
+        sql += f" ORDER BY {explicit}, v.id"
+    elif collection:
         sql += " ORDER BY ci.rank ASC"
     elif playlist_order:
         # A playlist's curated order is the reason it exists -- Chapter 1 first.
@@ -437,6 +468,7 @@ def create_collection(conn, name: str):
 def delete_collection(conn, cid: int) -> None:
     conn.execute("DELETE FROM collection_items WHERE collection_id = ?", (cid,))
     conn.execute("DELETE FROM collections WHERE id = ?", (cid,))
+    conn.execute("DELETE FROM view_prefs WHERE scope = ?", (f"collection:{cid}",))
     conn.commit()
 
 
@@ -485,6 +517,51 @@ def collections_for(conn, vid: str) -> list:
         """SELECT c.id, c.name FROM collections c
              JOIN collection_items ci ON ci.collection_id = c.id
             WHERE ci.video_id = ? ORDER BY c.name""", (vid,)).fetchall()
+
+
+# --- remembered sort ------------------------------------------------------
+
+def sort_scope(source=None, collection=None) -> str:
+    if collection:
+        return f"collection:{collection}"
+    if source:
+        return f"source:{source}"
+    return "global"
+
+
+def get_sort(conn, source=None, collection=None) -> str:
+    """The sort this view should use: its own, else the global one, else default.
+
+    A per-view row wins so that one channel you read oldest-first stays that
+    way without dragging the rest of the library with it.
+    """
+    scopes = [sort_scope(source, collection)]
+    if scopes[0] != "global":
+        scopes.append("global")
+    for scope in scopes:
+        row = conn.execute("SELECT sort FROM view_prefs WHERE scope = ?",
+                           (scope,)).fetchone()
+        if row and row["sort"] in SORTS:
+            return row["sort"]
+    return "default"
+
+
+def set_sort(conn, sort: str, source=None, collection=None) -> None:
+    """Remember (or, for 'default', forget) the sort for one view."""
+    if sort not in SORTS:
+        raise ValueError(f"unknown sort {sort!r}")
+    scope = sort_scope(source, collection)
+    if sort == "default":
+        # Storing 'default' would shadow a global preference the user set on
+        # purpose; clearing the row is what "back to normal" actually means.
+        conn.execute("DELETE FROM view_prefs WHERE scope = ?", (scope,))
+    else:
+        conn.execute(
+            """INSERT INTO view_prefs (scope, sort, set_at) VALUES (?, ?, ?)
+               ON CONFLICT(scope) DO UPDATE SET sort = excluded.sort,
+                                                set_at = excluded.set_at""",
+            (scope, sort, now()))
+    conn.commit()
 
 
 # --- misc -----------------------------------------------------------------

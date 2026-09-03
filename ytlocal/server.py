@@ -137,6 +137,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._fail(400, "name required")
                 c = db.create_collection(self.conn, name)
                 return self._json({"ok": True, "id": c["id"], "name": c["name"]})
+            if url.path == "/api/sort":
+                body = self._body()
+                sort = body.get("sort") or "default"
+                if sort not in db.SORTS:
+                    return self._fail(400, f"unknown sort {sort!r}")
+                coll = body.get("collection")
+                db.set_sort(self.conn, sort, source=body.get("source") or None,
+                            collection=int(coll) if coll else None)
+                return self._json({"ok": True, "sort": sort})
             if url.path == "/api/jobs/clear":
                 self.server.dl.forget_finished()
                 return self._json({"ok": True})
@@ -163,17 +172,23 @@ class Handler(BaseHTTPRequestHandler):
 
         have = {"1": True, "0": False}.get(one("have"))
         source = one("source") or None
-        collection = one("collection") or None
+        collection = int(one("collection")) if one("collection") else None
+        # No sort in the query string means "whatever this view was last set
+        # to" -- the preference lives in the catalog, not in the page.
+        sort = one("sort") or db.get_sort(self.conn, source, collection)
+        if sort not in db.SORTS:
+            sort = "default"
         rows = db.query_videos(
             self.conn,
             source=source,
-            collection=int(collection) if collection else None,
+            collection=collection,
             q=(one("q") or "").strip() or None,
             have=have,
             starred=one("starred") == "1",
             unwatched=one("unwatched") == "1",
             limit=int(one("limit", "300")),
             offset=int(one("offset", "0")),
+            sort=sort,
         )
         srcs = [
             {"id": s["id"], "kind": s["kind"],
@@ -187,7 +202,8 @@ class Handler(BaseHTTPRequestHandler):
             for c in db.collections(self.conn)
         ]
         # A playlist or collection is shown in its own order, so the UI must not
-        # re-sort it; say so explicitly rather than making the page guess.
+        # re-sort it; say so explicitly rather than making the page guess. Under
+        # an explicit sort the position numbers would be fiction, so drop them.
         ordered = bool(collection)
         if source and not ordered:
             row = self.conn.execute(
@@ -197,7 +213,9 @@ class Handler(BaseHTTPRequestHandler):
             "videos": [row_to_json(r) for r in rows],
             "sources": srcs,
             "collections": colls,
-            "ordered": ordered,
+            "ordered": ordered and sort == "default",
+            "sort": sort,
+            "sorts": [{"key": k, "label": v[0]} for k, v in db.SORTS.items()],
             "stats": db.stats(self.conn),
             "jobs": self.server.dl.snapshot(),
         })

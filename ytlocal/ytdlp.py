@@ -15,6 +15,10 @@ from ytlocal import config
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# Playlist ids are longer than a video id and carry a family prefix: PL for a
+# user-made playlist, OLAK for an auto-generated album, UU/UL for a channel's
+# uploads. Matching on the prefix keeps a channel's own id (UC...) out.
+_PLAYLIST_ID_RE = re.compile(r"^(PL|OLAK|UU|UL|FL|RD)[A-Za-z0-9_-]{4,}$")
 
 
 class YtdlpError(RuntimeError):
@@ -38,20 +42,29 @@ def check(cfg: dict) -> str:
     return out.stdout.strip()
 
 
+_TAB_RE = re.compile(r"/(videos|streams|shorts|playlists)$")
+
+
+def _channel_base(ref: str) -> str:
+    """A channel URL with no tab on the end, from a handle, name or URL."""
+    ref = ref.strip().rstrip("/")
+    if not ref.startswith("http"):
+        ref = "https://www.youtube.com/" + (ref if ref.startswith("@") else "@" + ref)
+    return _TAB_RE.sub("", ref)
+
+
 def source_url(ref: str) -> str:
     """Normalise whatever the user typed into a URL we can page through."""
-    ref = ref.strip()
-    if ref.startswith("PL") or ref.startswith("UU") or ref.startswith("OLAK"):
+    ref = ref.strip().rstrip("/")
+    if ref.startswith(("PL", "UU", "OLAK")):
         return f"https://www.youtube.com/playlist?list={ref}"
-    if ref.startswith("@"):
-        return f"https://www.youtube.com/{ref}/videos"
-    if not ref.startswith("http"):
-        return f"https://www.youtube.com/@{ref}/videos"
-    ref = ref.rstrip("/")
-    # Already pointed at a tab we can page through? Leave it alone.
-    if re.search(r"/(videos|streams|shorts|playlists)$", ref) or "list=" in ref:
+    if "list=" in ref:
         return ref
-    return ref + "/videos"
+    # A tab the user named explicitly is left alone -- including /playlists,
+    # which is not a video listing at all and is caught by the caller.
+    if _TAB_RE.search(ref):
+        return _channel_base(ref) + _TAB_RE.search(ref).group(0)
+    return _channel_base(ref) + "/videos"
 
 
 # Kept as an alias: older call sites and muscle memory both say channel_url.
@@ -60,6 +73,54 @@ channel_url = source_url
 
 def url_kind(url: str) -> str:
     return "playlist" if "list=" in url else "channel"
+
+
+def playlists_url(ref: str) -> str:
+    """Point whatever the user typed at that creator's playlists tab.
+
+    /videos, /playlists, a bare handle and a full channel URL all name the
+    same channel, so all four land on the same tab.
+    """
+    return _channel_base(ref) + "/playlists"
+
+
+def list_playlists(cfg: dict, url: str):
+    """Flat-list a channel's playlists tab. Returns (owner, [playlists]).
+
+    The tab yields playlist entries, not videos: each carries a PL... id and a
+    title but no video count, because counting would mean opening every one.
+    """
+    cmd = base_cmd(cfg) + ["--flat-playlist", "--dump-json", "--ignore-errors", url]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    owner, seen, found = None, set(), []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        pid = e.get("id") or _list_id(e.get("url") or "")
+        if not pid or not _PLAYLIST_ID_RE.match(pid) or pid in seen:
+            continue
+        seen.add(pid)
+        # On this tab the per-entry channel/uploader keys read "View full
+        # playlist"; the owning channel is on the playlist_* keys instead.
+        if owner is None:
+            owner = (e.get("playlist_channel") or e.get("playlist_uploader")
+                     or (e.get("playlist_title") or "").replace(" - Playlists", "")
+                     or None)
+        found.append({
+            "id": pid,
+            "title": e.get("title") or pid,
+            "url": e.get("url") or f"https://www.youtube.com/playlist?list={pid}",
+        })
+    if not found:
+        raise YtdlpError(
+            f"no playlists found at {url}\n{(proc.stderr or '').strip()[:800]}"
+        )
+    return owner, found
 
 
 def sync_source(cfg: dict, url: str, limit=None):

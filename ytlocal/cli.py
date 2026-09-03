@@ -101,6 +101,10 @@ def _resolve_or_die(conn, needle, source=None, collection=None):
 def cmd_add(args, cfg, conn):
     url = ytdlp.source_url(args.source)
     kind = ytdlp.url_kind(url)
+    if url.endswith("/playlists"):
+        # That tab lists playlists, not videos; syncing it would find nothing.
+        die(f"{args.source} is a creator's playlist index, not a single source.\n"
+            f"       browse it with:  yt playlists {args.source}")
     out(f"resolving {C['acc']}{url}{C['r']} …")
     meta, entries = ytdlp.sync_source(cfg, url, limit=args.limit)
     sid = meta["source_id"]
@@ -166,6 +170,38 @@ def cmd_sources(args, cfg, conn):
             f"{s['n_have']:>4}/{s['n_total']:<5} on disk  {C['dim']}{extra}{C['r']}")
 
 
+def cmd_playlists(args, cfg, conn):
+    """No argument lists what we track; an @handle browses what a creator has."""
+    if not getattr(args, "creator", None):
+        return cmd_sources(args, cfg, conn)
+
+    if "list=" in args.creator or args.creator.startswith(("PL", "OLAK")):
+        die(f"{args.creator} is one playlist, not a creator.\n"
+            f"       track it with:  yt add {args.creator}")
+    url = ytdlp.playlists_url(args.creator)
+    out(f"resolving {C['acc']}{url}{C['r']} …")
+    owner, found = ytdlp.list_playlists(cfg, url)
+    tracked = {row["id"] for row in db.sources(conn, "playlist")}
+    width = max(30, shutil.get_terminal_size((100, 24)).columns - 42)
+
+    out(f"\n{C['b']}{len(found)}{C['r']} playlists on "
+        f"{C['b']}{owner or args.creator}{C['r']}"
+        f"  {C['dim']}(▤ = already tracked){C['r']}\n")
+    for i, pl in enumerate(found, 1):
+        mark = f"{C['ok']}▤{C['r']}" if pl["id"] in tracked else " "
+        title = pl["title"]
+        if len(title) > width:
+            title = title[: width - 1] + "…"
+        out(f"{C['dim']}{i:>3}{C['r']} {mark} {title:<{width}}  "
+            f"{C['dim']}{pl['id']}{C['r']}")
+
+    untracked = next((pl for pl in found if pl["id"] not in tracked), None)
+    if untracked:
+        out(f"\n{C['dim']}track one:{C['r']}  yt add {untracked['id']}")
+    else:
+        out(f"\n{C['dim']}all of them are already tracked.{C['r']}")
+
+
 def cmd_forget(args, cfg, conn):
     src = _source_or_die(conn, args.source)
     name = src["name"] or src["url"]
@@ -192,13 +228,26 @@ def cmd_list(args, cfg, conn):
         source = s["id"]
         ordered = ordered or s["kind"] == "playlist"
     have = True if args.downloaded else (False if args.missing else None)
+    # An explicit --sort wins; otherwise use whatever this view was last set to,
+    # so the web UI's dropdown and the terminal agree on what you asked for.
+    sort = args.sort or db.get_sort(conn, source=source, collection=coll)
+    if args.save:
+        if not args.sort:
+            die("--save needs a --sort to save")
+        db.set_sort(conn, sort, source=source, collection=coll)
     rows = db.query_videos(conn, source=source, collection=coll, q=args.query,
                            have=have, starred=args.starred,
-                           unwatched=args.unwatched, limit=args.number)
+                           unwatched=args.unwatched, limit=args.number,
+                           sort=sort)
     if not rows:
         out("nothing matches.")
         return
-    print_rows(rows, ordered=ordered)
+    # Row numbers stand for curated position; under any other sort they'd be
+    # inventing an order the source never had.
+    print_rows(rows, ordered=ordered and sort == "default")
+    if sort != "default":
+        note = "saved for this view" if args.save else db.SORTS[sort][0].lower()
+        out(f"{C['dim']}sorted: {note}{C['r']}")
 
 
 def cmd_info(args, cfg, conn):
@@ -510,7 +559,9 @@ def build_parser():
             typical flow:
               yt add @3blue1brown              track a channel (metadata only)
               yt add <playlist url>            track a playlist, curated order kept
+              yt playlists @3blue1brown        see a creator's playlists, pick one
               yt list "linear algebra"         browse it in order
+              yt list --sort oldest --save     remember an order for a view
               yt get "eigenvectors"            download one
               yt collect new "ML basics"       build your own study queue
               yt collect add "ML basics" --source "linear algebra"
@@ -534,8 +585,13 @@ def build_parser():
     src.set_defaults(fn=cmd_sources)
     ch = sub.add_parser("channels", help="list tracked channels")
     ch.set_defaults(fn=cmd_sources, kind="channel")
-    pl = sub.add_parser("playlists", help="list tracked playlists")
-    pl.set_defaults(fn=cmd_sources, kind="playlist")
+    pl = sub.add_parser("playlists", help="list tracked playlists, or a creator's",
+                        description="No argument lists the playlists you track. "
+                                    "Give a channel and it lists that creator's "
+                                    "playlists so you can pick ones to add.")
+    pl.add_argument("creator", nargs="?",
+                    help="@handle or channel URL: list that creator's playlists")
+    pl.set_defaults(fn=cmd_playlists, kind="playlist")
 
     f = sub.add_parser("forget", help="stop tracking a channel or playlist")
     f.add_argument("source")
@@ -551,6 +607,10 @@ def build_parser():
     l.add_argument("--missing", action="store_true", help="only catalog-only entries")
     l.add_argument("--starred", action="store_true")
     l.add_argument("--unwatched", action="store_true")
+    l.add_argument("--sort", choices=db.SORT_KEYS,
+                   help="order to list in; default keeps the view's own order")
+    l.add_argument("--save", action="store_true",
+                   help="remember this --sort for this view (and the web UI)")
     l.set_defaults(fn=cmd_list)
 
     g = sub.add_parser("get", help="download video(s) to disk")

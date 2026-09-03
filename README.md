@@ -16,6 +16,8 @@ Three ideas do the work:
 3. **Order carries meaning.** A channel is newest-first. A playlist is whatever
    order its author chose, because "Chapter 1" before "Chapter 2" is the entire
    point of a lesson series. Collections you build yourself keep your order.
+   When a view's own order isn't the one you want, [sorting](#sorting) is a
+   per-view setting the library remembers.
 
 ---
 
@@ -119,6 +121,7 @@ yt list -q "entropy"                 # text search
 yt list --downloaded                 # only what's on disk
 yt list --missing --starred          # starred but not yet fetched
 yt list --downloaded --unwatched     # your actual watch queue
+yt list veritasium --sort oldest     # from the beginning — see Sorting
 ```
 
 ---
@@ -175,6 +178,9 @@ Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
   groups everything you can narrow to: **Channels**, **Playlists**, and your
   **Collections**. Picking a playlist or collection switches the grid into that
   list's own order and numbers each card.
+- **Sort dropdown** reorders the grid — newest, oldest, recently added, title,
+  longest, shortest. Your choice is remembered for that view and shared with
+  the CLI; see [Sorting](#sorting).
 - **＋ collection** on any card adds it to one of your collections, or creates
   a new one on the spot.
 - **Three chips** — Downloaded, Starred, Unwatched — combine with the search.
@@ -220,6 +226,74 @@ $ yt sources
 ```
 
 `yt channels` and `yt playlists` narrow that list to one kind.
+
+### Finding a creator's playlists
+
+You rarely know a playlist's URL by heart. Give `yt playlists` a channel and it
+lists what that creator has published, marking the ones you already track:
+
+```console
+$ yt playlists @3blue1brown
+resolving https://www.youtube.com/@3blue1brown/playlists …
+
+24 playlists on 3Blue1Brown  (▤ = already tracked)
+
+ 18   Neural networks                              PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
+ 19   Essence of calculus                          PLZHQObOWTQDMsr9K-rj53DwVRMYO3t5Yr
+ 20   Binary, Hanoi and Sierpinski                 PLZHQObOWTQDMRtm8h9bG9P06WINNoBnCR
+ 21 ▤ Essence of linear algebra                    PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab
+
+track one:  yt add PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
+```
+
+Nothing is tracked until you say so — a large channel can have dozens of
+playlists, and you almost never want all of them. Copy the id of the one you
+want into `yt add`. Video counts aren't shown because counting would mean
+opening every playlist; `yt add` reports the count for the one you pick.
+
+---
+
+## Sorting
+
+Every view arrives in the order that suits it — a playlist in its curated
+order, a collection in yours, everything else newest-first. `--sort` overrides
+that when you want a different question answered:
+
+```console
+$ yt list Chienowa --sort oldest -n 3     # start a channel from the beginning
+$ yt list --sort longest                  # what's the long stuff in here?
+$ yt list -c "ML basics" --sort shortest  # a 10-minute gap to fill
+```
+
+| Sort | Order |
+| --- | --- |
+| `default` | The view's own: curated for a playlist or collection, newest-first otherwise |
+| `newest` / `oldest` | By upload date. Undated entries sort last |
+| `added` | Most recently catalogued first — what showed up in the last `yt sync` |
+| `title` | A–Z, case-insensitive |
+| `longest` / `shortest` | By runtime |
+
+Row numbers only appear under `default`, since they mean *position in this
+playlist* — under any other sort they'd be inventing an order the source never
+had.
+
+**Remembering it.** Add `--save` and that sort sticks to that view:
+
+```console
+$ yt list Chienowa --sort oldest --save
+sorted: saved for this view
+$ yt list Chienowa                        # still oldest-first
+```
+
+The preference lives in the catalog, keyed to one channel, playlist or
+collection — so a course you work through front-to-back stays that way while
+the rest of your library stays newest-first. Saving against no particular view
+(`yt list --sort title --save`) sets the fallback for every view that hasn't
+chosen its own. `--sort default --save` clears a view's setting.
+
+The web library's **sort dropdown** is the same setting: change it there and
+the terminal agrees, and vice versa. Switching sources in the dropdown loads
+that view's own remembered order.
 
 ---
 
@@ -338,7 +412,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | --- | --- |
 | `yt add <@handle\|url\|PL…>` | Track a channel or playlist and catalog it. `--limit N` for just the newest N. |
 | `yt sync [source]` | Refresh catalogs; never downloads. `--show-new`, `--limit N`. |
-| `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`. |
+| `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--sort KEY [--save]`. |
 | `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--source X`, `-c COLLECTION`, `--audio`. |
 | `yt collect …` | Your own collections — see [Collections](#collections). |
 | `yt watch <id\|phrase>` | Play in mpv/vlc, downloading first if needed. `--mark` marks it watched. |
@@ -349,6 +423,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt serve` | The web library. `-p PORT`, `--no-open`, `-v`. |
 | `yt sources` | List channels and playlists with on-disk counts. `--kind channel\|playlist`. |
 | `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
+| `yt playlists <@handle\|url>` | List a creator's playlists so you can pick ones to track. |
 | `yt forget <source>` | Stop tracking. Downloaded files and collections stay. `-y` skips the prompt. |
 | `yt config [--init]` | Show settings, or write a config file to edit. |
 | `yt block` | How to block youtube.com without breaking downloads. |
