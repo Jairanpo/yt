@@ -63,7 +63,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj), "application/json; charset=utf-8")
 
     def _fail(self, code, msg):
-        self._json({"error": msg}, code)
+        # The client may already be gone (the usual cause of a 500 here is a
+        # reset mid-stream); never let the error path raise a second time.
+        try:
+            self._json({"error": msg}, code)
+        except ConnectionError:
+            self.close_connection = True
 
     @property
     def conn(self):
@@ -109,8 +114,10 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/subs/"):
                 return self._subs(path[6:])
             return self._fail(404, "not found")
-        except BrokenPipeError:
-            pass  # browser seeked away mid-stream; normal for <video>
+        except ConnectionError:
+            # Reset/broken pipe: the browser seeked away or closed the tab
+            # mid-stream. Normal for <video>; nothing left to reply to.
+            self.close_connection = True
         except Exception as exc:  # noqa: BLE001
             self._fail(500, str(exc))
 
@@ -134,6 +141,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.dl.forget_finished()
                 return self._json({"ok": True})
             return self._fail(404, "not found")
+        except ConnectionError:
+            self.close_connection = True
         except Exception as exc:  # noqa: BLE001
             self._fail(500, str(exc))
 
