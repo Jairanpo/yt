@@ -15,6 +15,10 @@ from ytlocal import config
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# Playlist ids are longer than a video id and carry a family prefix: PL for a
+# user-made playlist, OLAK for an auto-generated album, UU/UL for a channel's
+# uploads. Matching on the prefix keeps a channel's own id (UC...) out.
+_PLAYLIST_ID_RE = re.compile(r"^(PL|OLAK|UU|UL|FL|RD)[A-Za-z0-9_-]{4,}$")
 
 
 class YtdlpError(RuntimeError):
@@ -38,26 +42,96 @@ def check(cfg: dict) -> str:
     return out.stdout.strip()
 
 
-def channel_url(ref: str) -> str:
-    """Normalise whatever the user typed into a channel /videos tab URL."""
-    ref = ref.strip()
-    if ref.startswith("@"):
-        return f"https://www.youtube.com/{ref}/videos"
+_TAB_RE = re.compile(r"/(videos|streams|shorts|playlists)$")
+
+
+def _channel_base(ref: str) -> str:
+    """A channel URL with no tab on the end, from a handle, name or URL."""
+    ref = ref.strip().rstrip("/")
     if not ref.startswith("http"):
-        return f"https://www.youtube.com/@{ref}/videos"
-    ref = ref.rstrip("/")
-    # Already pointed at a tab we can page through? Leave it alone.
-    if re.search(r"/(videos|streams|shorts|playlists)$", ref) or "list=" in ref:
+        ref = "https://www.youtube.com/" + (ref if ref.startswith("@") else "@" + ref)
+    return _TAB_RE.sub("", ref)
+
+
+def source_url(ref: str) -> str:
+    """Normalise whatever the user typed into a URL we can page through."""
+    ref = ref.strip().rstrip("/")
+    if ref.startswith(("PL", "UU", "OLAK")):
+        return f"https://www.youtube.com/playlist?list={ref}"
+    if "list=" in ref:
         return ref
-    return ref + "/videos"
+    # A tab the user named explicitly is left alone -- including /playlists,
+    # which is not a video listing at all and is caught by the caller.
+    if _TAB_RE.search(ref):
+        return _channel_base(ref) + _TAB_RE.search(ref).group(0)
+    return _channel_base(ref) + "/videos"
 
 
-def sync_channel(cfg: dict, url: str, limit=None):
-    """Flat-list a channel. Returns (channel_meta, entries) ordered newest-first.
+# Kept as an alias: older call sites and muscle memory both say channel_url.
+channel_url = source_url
+
+
+def url_kind(url: str) -> str:
+    return "playlist" if "list=" in url else "channel"
+
+
+def playlists_url(ref: str) -> str:
+    """Point whatever the user typed at that creator's playlists tab.
+
+    /videos, /playlists, a bare handle and a full channel URL all name the
+    same channel, so all four land on the same tab.
+    """
+    return _channel_base(ref) + "/playlists"
+
+
+def list_playlists(cfg: dict, url: str):
+    """Flat-list a channel's playlists tab. Returns (owner, [playlists]).
+
+    The tab yields playlist entries, not videos: each carries a PL... id and a
+    title but no video count, because counting would mean opening every one.
+    """
+    cmd = base_cmd(cfg) + ["--flat-playlist", "--dump-json", "--ignore-errors", url]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    owner, seen, found = None, set(), []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        pid = e.get("id") or _list_id(e.get("url") or "")
+        if not pid or not _PLAYLIST_ID_RE.match(pid) or pid in seen:
+            continue
+        seen.add(pid)
+        # On this tab the per-entry channel/uploader keys read "View full
+        # playlist"; the owning channel is on the playlist_* keys instead.
+        if owner is None:
+            owner = (e.get("playlist_channel") or e.get("playlist_uploader")
+                     or (e.get("playlist_title") or "").replace(" - Playlists", "")
+                     or None)
+        found.append({
+            "id": pid,
+            "title": e.get("title") or pid,
+            "url": e.get("url") or f"https://www.youtube.com/playlist?list={pid}",
+        })
+    if not found:
+        raise YtdlpError(
+            f"no playlists found at {url}\n{(proc.stderr or '').strip()[:800]}"
+        )
+    return owner, found
+
+
+def sync_source(cfg: dict, url: str, limit=None):
+    """Flat-list a channel or playlist. Returns (meta, entries).
 
     Flat mode is one request per ~100 videos and carries no per-video cost, which
-    is what makes cataloguing a whole back catalogue cheap.
+    is what makes cataloguing a whole back catalogue cheap. Entries keep the
+    order the listing gave them: newest-first for a channel, curated order for
+    a playlist.
     """
+    kind = url_kind(url)
     cmd = base_cmd(cfg) + [
         "--flat-playlist", "--dump-json", "--ignore-errors",
         "--extractor-args", "youtubetab:approximate_date",
@@ -80,15 +154,29 @@ def sync_channel(cfg: dict, url: str, limit=None):
         if not _ID_RE.match(vid):
             continue
         if not meta:
-            # In flat mode YouTube puts the channel identity on the playlist_*
-            # keys; the per-entry channel_*/uploader_* keys come back as None.
-            meta = {
-                "channel_id": (e.get("channel_id") or e.get("playlist_channel_id")
-                               or e.get("playlist_id")),
-                "name": (e.get("channel") or e.get("playlist_channel")
-                         or e.get("playlist_uploader") or e.get("uploader")),
-                "handle": _handle_from(e),
-            }
+            # In flat mode YouTube puts the identity on the playlist_* keys; the
+            # per-entry channel_*/uploader_* keys come back as None. Note that
+            # for a playlist, playlist_channel_id is the *owning channel* --
+            # keying a playlist by it merges it into that channel.
+            if kind == "playlist":
+                meta = {
+                    "kind": "playlist",
+                    "source_id": e.get("playlist_id") or _list_id(url),
+                    "name": e.get("playlist_title") or e.get("playlist"),
+                    "owner": (e.get("playlist_channel") or e.get("playlist_uploader")
+                              or e.get("channel")),
+                    "handle": _handle_from(e),
+                }
+            else:
+                meta = {
+                    "kind": "channel",
+                    "source_id": (e.get("channel_id") or e.get("playlist_channel_id")
+                                  or e.get("playlist_id")),
+                    "name": (e.get("channel") or e.get("playlist_channel")
+                             or e.get("playlist_uploader") or e.get("uploader")),
+                    "owner": None,
+                    "handle": _handle_from(e),
+                }
         date = _fmt_date(e.get("upload_date"))
         entries.append({
             "id": vid,
@@ -107,9 +195,14 @@ def sync_channel(cfg: dict, url: str, limit=None):
         raise YtdlpError(
             f"no videos found at {url}\n{(proc.stderr or '').strip()[:800]}"
         )
-    if not meta.get("channel_id"):
-        meta["channel_id"] = url
+    if not meta.get("source_id"):
+        meta["source_id"] = _list_id(url) or url
     return meta, entries
+
+
+def _list_id(url: str):
+    m = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
+    return m.group(1) if m else None
 
 
 def _handle_from(entry: dict):

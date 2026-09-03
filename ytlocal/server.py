@@ -19,8 +19,7 @@ def row_to_json(r) -> dict:
     return {
         "id": r["id"],
         "title": r["title"],
-        "channel": r["channel_name"] or r["channel_handle"] or r["channel_id"],
-        "channel_id": r["channel_id"],
+        "channel": r["channel_name"] or r["channel_handle"] or "unknown",
         "date": r["upload_date"],
         "date_approx": bool(r["date_approx"]),
         "duration": r["duration"],
@@ -64,7 +63,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj), "application/json; charset=utf-8")
 
     def _fail(self, code, msg):
-        self._json({"error": msg}, code)
+        # The client may already be gone (the usual cause of a 500 here is a
+        # reset mid-stream); never let the error path raise a second time.
+        try:
+            self._json({"error": msg}, code)
+        except ConnectionError:
+            self.close_connection = True
 
     @property
     def conn(self):
@@ -92,6 +96,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, PAGE, "text/html; charset=utf-8")
             if path == "/api/state":
                 return self._api_state(qs)
+            if path.startswith("/api/collections/"):
+                vid = path[len("/api/collections/"):]
+                if not _ID_RE.match(vid):
+                    return self._fail(400, "bad id")
+                return self._json({"collections": [
+                    {"id": c["id"], "name": c["name"]}
+                    for c in db.collections_for(self.conn, vid)]})
             if path.startswith("/api/subs/"):
                 return self._sub_langs(path[len("/api/subs/"):])
             if path == "/api/jobs":
@@ -103,8 +114,10 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/subs/"):
                 return self._subs(path[6:])
             return self._fail(404, "not found")
-        except BrokenPipeError:
-            pass  # browser seeked away mid-stream; normal for <video>
+        except ConnectionError:
+            # Reset/broken pipe: the browser seeked away or closed the tab
+            # mid-stream. Normal for <video>; nothing left to reply to.
+            self.close_connection = True
         except Exception as exc:  # noqa: BLE001
             self._fail(500, str(exc))
 
@@ -117,10 +130,28 @@ class Handler(BaseHTTPRequestHandler):
                 if not _ID_RE.match(vid):
                     return self._fail(400, "bad video id")
                 return self._action(action, vid)
+            if url.path == "/api/collections":
+                body = self._body()
+                name = (body.get("name") or "").strip()
+                if not name:
+                    return self._fail(400, "name required")
+                c = db.create_collection(self.conn, name)
+                return self._json({"ok": True, "id": c["id"], "name": c["name"]})
+            if url.path == "/api/sort":
+                body = self._body()
+                sort = body.get("sort") or "default"
+                if sort not in db.SORTS:
+                    return self._fail(400, f"unknown sort {sort!r}")
+                coll = body.get("collection")
+                db.set_sort(self.conn, sort, source=body.get("source") or None,
+                            collection=int(coll) if coll else None)
+                return self._json({"ok": True, "sort": sort})
             if url.path == "/api/jobs/clear":
                 self.server.dl.forget_finished()
                 return self._json({"ok": True})
             return self._fail(404, "not found")
+        except ConnectionError:
+            self.close_connection = True
         except Exception as exc:  # noqa: BLE001
             self._fail(500, str(exc))
 
@@ -140,24 +171,51 @@ class Handler(BaseHTTPRequestHandler):
             return qs.get(key, [default])[0]
 
         have = {"1": True, "0": False}.get(one("have"))
+        source = one("source") or None
+        collection = int(one("collection")) if one("collection") else None
+        # No sort in the query string means "whatever this view was last set
+        # to" -- the preference lives in the catalog, not in the page.
+        sort = one("sort") or db.get_sort(self.conn, source, collection)
+        if sort not in db.SORTS:
+            sort = "default"
         rows = db.query_videos(
             self.conn,
-            channel=one("channel") or None,
+            source=source,
+            collection=collection,
             q=(one("q") or "").strip() or None,
             have=have,
             starred=one("starred") == "1",
             unwatched=one("unwatched") == "1",
             limit=int(one("limit", "300")),
             offset=int(one("offset", "0")),
+            sort=sort,
         )
-        chans = [
-            {"id": c["id"], "name": c["name"] or c["handle"] or c["url"],
-             "handle": c["handle"], "total": c["n_total"], "have": c["n_have"]}
-            for c in db.channels(self.conn)
+        srcs = [
+            {"id": s["id"], "kind": s["kind"],
+             "name": s["name"] or s["handle"] or s["url"],
+             "owner": s["owner"], "total": s["n_total"], "have": s["n_have"]}
+            for s in db.sources(self.conn)
         ]
+        colls = [
+            {"id": c["id"], "name": c["name"], "total": c["n_total"],
+             "have": c["n_have"]}
+            for c in db.collections(self.conn)
+        ]
+        # A playlist or collection is shown in its own order, so the UI must not
+        # re-sort it; say so explicitly rather than making the page guess. Under
+        # an explicit sort the position numbers would be fiction, so drop them.
+        ordered = bool(collection)
+        if source and not ordered:
+            row = self.conn.execute(
+                "SELECT kind FROM sources WHERE id = ?", (source,)).fetchone()
+            ordered = bool(row and row["kind"] == "playlist")
         return self._json({
             "videos": [row_to_json(r) for r in rows],
-            "channels": chans,
+            "sources": srcs,
+            "collections": colls,
+            "ordered": ordered and sort == "default",
+            "sort": sort,
+            "sorts": [{"key": k, "label": v[0]} for k, v in db.SORTS.items()],
             "stats": db.stats(self.conn),
             "jobs": self.server.dl.snapshot(),
         })
@@ -181,6 +239,17 @@ class Handler(BaseHTTPRequestHandler):
         if action == "progress":
             db.set_flag(self.conn, vid, "progress", float(body.get("value", 0)))
             return self._json({"ok": True})
+        if action == "collect":
+            cid = body.get("collection")
+            if cid is None:
+                return self._fail(400, "collection required")
+            if body.get("remove"):
+                db.collection_remove(self.conn, int(cid), vid)
+            else:
+                db.collection_add(self.conn, int(cid), vid)
+            return self._json({"ok": True, "collections": [
+                {"id": c["id"], "name": c["name"]}
+                for c in db.collections_for(self.conn, vid)]})
         if action == "remove":
             if row["downloaded_path"]:
                 p = Path(row["downloaded_path"])

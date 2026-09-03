@@ -1,9 +1,10 @@
 # yt · local
 
-A catalog-first local library for the YouTube channels you actually learn from,
-so you can block youtube.com outright and still reach the videos you want.
+A catalog-first local library for the YouTube channels, playlists and courses
+you actually learn from, so you can block youtube.com outright and still reach
+the videos you want.
 
-Two ideas do the work:
+Three ideas do the work:
 
 1. **Cataloguing is cheap; downloading is not.** Indexing a channel pulls
    metadata only — one request per ~100 videos, no disk. A 500-video back
@@ -12,6 +13,11 @@ Two ideas do the work:
 2. **The library is sealed.** `yt serve` binds to loopback and the page carries
    a CSP that forbids outbound requests. Thumbnails are cached server-side on
    first view. Once a video is on disk, watching it touches no network at all.
+3. **Order carries meaning.** A channel is newest-first. A playlist is whatever
+   order its author chose, because "Chapter 1" before "Chapter 2" is the entire
+   point of a lesson series. Collections you build yourself keep your order.
+   When a view's own order isn't the one you want, [sorting](#sorting) is a
+   per-view setting the library remembers.
 
 ---
 
@@ -45,6 +51,14 @@ added 3Blue1Brown — 151 videos catalogued (151 new). Nothing downloaded yet.
 
 Accepts an `@handle`, a full channel URL, or a playlist URL. Add `--limit 20`
 to index only the newest 20 instead of the whole back catalogue.
+
+**1b. Or track a playlist.** Same command — it detects the kind from the URL.
+
+```console
+$ yt add "https://www.youtube.com/playlist?list=PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab"
+added playlist Essence of linear algebra (3Blue1Brown) — 16 videos catalogued (16 new).
+listed in the playlist's own order; yt list "Essence of linear algebra" to see it
+```
 
 **2. See what's there.**
 
@@ -107,6 +121,7 @@ yt list -q "entropy"                 # text search
 yt list --downloaded                 # only what's on disk
 yt list --missing --starred          # starred but not yet fetched
 yt list --downloaded --unwatched     # your actual watch queue
+yt list veritasium --sort oldest     # from the beginning — see Sorting
 ```
 
 ---
@@ -159,8 +174,15 @@ yt serve --no-open       # don't launch a browser
 
 Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
 
-- **Search box** filters titles and descriptions as you type; the dropdown
-  narrows to one channel.
+- **Search box** filters titles and descriptions as you type. The dropdown
+  groups everything you can narrow to: **Channels**, **Playlists**, and your
+  **Collections**. Picking a playlist or collection switches the grid into that
+  list's own order and numbers each card.
+- **Sort dropdown** reorders the grid — newest, oldest, recently added, title,
+  longest, shortest. Your choice is remembered for that view and shared with
+  the CLI; see [Sorting](#sorting).
+- **＋ collection** on any card adds it to one of your collections, or creates
+  a new one on the spot.
 - **Three chips** — Downloaded, Starred, Unwatched — combine with the search.
 - **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
   reads **Watch** if the file is local and **Download** if it isn't; clicking
@@ -176,22 +198,166 @@ Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
 
 ---
 
+## Playlists
+
+A playlist is tracked exactly like a channel — `yt add` takes an `@handle`, a
+channel URL, a playlist URL, or a bare `PL...` id and works out which it is.
+The difference is what happens to ordering:
+
+```console
+$ yt list "linear algebra" -n 4
+  1 ○  fNk_zzaMoSs  ~2016-09        9:52  Vectors | Chapter 1, Essence of linear algebra
+  2 ○  k7RM-ot2NWY  ~2016-09        9:59  Linear combinations, span, and basis vectors | Chap…
+  3 ○  kYB8IZa5AuE  ~2016-09       10:59  Linear transformations and matrices | Chapter 3, Es…
+  4 ○  XkY2DOUCWMU  ~2016-09       10:04  Matrix multiplication as composition | Chapter 4, Es…
+```
+
+Chapter 1 first, with the position shown, rather than the newest-first ordering
+a channel gets. The web library does the same, and `yt get --source "linear
+algebra"` pulls the whole course down in one go.
+
+A channel and a playlist from that channel are separate sources, and a video
+can belong to both without being duplicated:
+
+```console
+$ yt sources
+▸ channel  3Blue1Brown                           1/151   on disk  @3blue1brown
+▤ playlist Essence of linear algebra             1/16    on disk  3Blue1Brown
+```
+
+`yt channels` and `yt playlists` narrow that list to one kind.
+
+### Finding a creator's playlists
+
+You rarely know a playlist's URL by heart. Give `yt playlists` a channel and it
+lists what that creator has published, marking the ones you already track:
+
+```console
+$ yt playlists @3blue1brown
+resolving https://www.youtube.com/@3blue1brown/playlists …
+
+24 playlists on 3Blue1Brown  (▤ = already tracked)
+
+ 18   Neural networks                              PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
+ 19   Essence of calculus                          PLZHQObOWTQDMsr9K-rj53DwVRMYO3t5Yr
+ 20   Binary, Hanoi and Sierpinski                 PLZHQObOWTQDMRtm8h9bG9P06WINNoBnCR
+ 21 ▤ Essence of linear algebra                    PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab
+
+track one:  yt add PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
+```
+
+Nothing is tracked until you say so — a large channel can have dozens of
+playlists, and you almost never want all of them. Copy the id of the one you
+want into `yt add`. Video counts aren't shown because counting would mean
+opening every playlist; `yt add` reports the count for the one you pick.
+
+---
+
+## Sorting
+
+Every view arrives in the order that suits it — a playlist in its curated
+order, a collection in yours, everything else newest-first. `--sort` overrides
+that when you want a different question answered:
+
+```console
+$ yt list Chienowa --sort oldest -n 3     # start a channel from the beginning
+$ yt list --sort longest                  # what's the long stuff in here?
+$ yt list -c "ML basics" --sort shortest  # a 10-minute gap to fill
+```
+
+| Sort | Order |
+| --- | --- |
+| `default` | The view's own: curated for a playlist or collection, newest-first otherwise |
+| `newest` / `oldest` | By upload date. Undated entries sort last |
+| `added` | Most recently catalogued first — what showed up in the last `yt sync` |
+| `title` | A–Z, case-insensitive |
+| `longest` / `shortest` | By runtime |
+
+Row numbers only appear under `default`, since they mean *position in this
+playlist* — under any other sort they'd be inventing an order the source never
+had.
+
+**Remembering it.** Add `--save` and that sort sticks to that view:
+
+```console
+$ yt list Chienowa --sort oldest --save
+sorted: saved for this view
+$ yt list Chienowa                        # still oldest-first
+```
+
+The preference lives in the catalog, keyed to one channel, playlist or
+collection — so a course you work through front-to-back stays that way while
+the rest of your library stays newest-first. Saving against no particular view
+(`yt list --sort title --save`) sets the fallback for every view that hasn't
+chosen its own. `--sort default --save` clears a view's setting.
+
+The web library's **sort dropdown** is the same setting: change it there and
+the terminal agrees, and vice versa. Switching sources in the dropdown loads
+that view's own remembered order.
+
+---
+
+## Collections
+
+Playlists come from YouTube. Collections are yours — any videos, from any
+channel or playlist, in an order you control. This is the study-queue feature.
+
+```console
+$ yt collect new "ML basics"
+created collection ML basics
+
+$ yt collect add "ML basics" --source "linear algebra"    # a whole course at once
++16 from Essence of linear algebra → ML basics
+
+$ yt collect add "ML basics" "cross-entropy"              # and one from elsewhere
++ But what is cross-entropy? | Compression is Intelligence Part 2 → ML basics
+```
+
+Reorder with `up` / `down` (add `--by N` to move several places at once), and
+`yt collect show` prints the current order:
+
+```console
+$ yt collect up "ML basics" "cross-entropy" --by 20
+  1 ○  GlYgs6v2YfU  ~2026-08       33:51  But what is cross-entropy? | Compression is Intell…
+  2 ○  fNk_zzaMoSs  ~2016-09        9:52  Vectors | Chapter 1, Essence of linear algebra
+```
+
+| | |
+| --- | --- |
+| `yt collect` | list your collections |
+| `yt collect new <name>` | create one |
+| `yt collect show <name>` | print it in order |
+| `yt collect add <name> <id\|phrase>` | add a video; or `--source <ch\|playlist>` for all of one |
+| `yt collect rm <name> <id\|phrase>` | remove a video (the file is untouched) |
+| `yt collect up\|down <name> <id\|phrase>` | reorder, `--by N` for bigger jumps |
+| `yt collect drop <name>` | delete the collection; videos and files stay |
+
+Collections compose with everything else — `yt list -c "ML basics"` to browse
+one, `yt get -c "ML basics"` to download everything in it that isn't on disk
+yet, and a **Collections** group in the web library's picker.
+
+Dropping a collection or forgetting a source never deletes downloaded files.
+
+---
+
 ## Keeping up with new uploads
 
 `yt sync` re-indexes tracked channels. It only ever touches metadata:
 
 ```console
 $ yt sync
-✓ 3Blue1Brown                          151 catalogued  +143 new
-✓ Veritasium                           412 catalogued   no change
+✓ ▸ 3Blue1Brown                        151 catalogued  +143 new
+✓ ▤ Essence of linear algebra           16 catalogued  no change
 
-143 new video(s) across 2 channel(s).
+143 new video(s) across 2 source(s).
 ```
 
-Add `--show-new` to print the new titles, or a channel name to sync just one.
-Note that `sync` indexes the *whole* channel — if you first used
-`yt add --limit 20`, the catalogue will grow past 20. That's intended;
-metadata is nearly free.
+`▸` is a channel, `▤` a playlist. Add `--show-new` to print the new titles, or
+a name to sync just one source. Note that `sync` indexes the *whole* source —
+if you first used `yt add --limit 20`, the catalogue will grow past 20. That's
+intended; metadata is nearly free. A full sync also drops videos that were
+removed from a playlist upstream; a `--limit` run never prunes, since it hasn't
+seen the tail.
 
 Nightly, via cron:
 
@@ -244,18 +410,21 @@ After that it displays in full, and a later approximation can't overwrite it.
 
 | Command | What it does |
 | --- | --- |
-| `yt add <@handle\|url>` | Track a channel and catalog it. `--limit N` for just the newest N. |
-| `yt sync [channel]` | Refresh catalogs; never downloads. `--show-new`, `--limit N`. |
-| `yt list [channel]` | Browse. `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`. |
-| `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--audio`. |
+| `yt add <@handle\|url\|PL…>` | Track a channel or playlist and catalog it. `--limit N` for just the newest N. |
+| `yt sync [source]` | Refresh catalogs; never downloads. `--show-new`, `--limit N`. |
+| `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--sort KEY [--save]`. |
+| `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--source X`, `-c COLLECTION`, `--audio`. |
+| `yt collect …` | Your own collections — see [Collections](#collections). |
 | `yt watch <id\|phrase>` | Play in mpv/vlc, downloading first if needed. `--mark` marks it watched. |
 | `yt star <id\|phrase>` | Toggle a star. `--on` / `--off` to force. |
 | `yt rm <id\|phrase>` | Delete the file, keep the catalog entry. `-y` skips the prompt. |
 | `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |
 | `yt status` | Counts and disk use; also reconciles the catalog with what's on disk. |
 | `yt serve` | The web library. `-p PORT`, `--no-open`, `-v`. |
-| `yt channels` | List tracked channels with on-disk counts. |
-| `yt forget <channel>` | Stop tracking. Downloaded files stay on disk. `-y` skips the prompt. |
+| `yt sources` | List channels and playlists with on-disk counts. `--kind channel\|playlist`. |
+| `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
+| `yt playlists <@handle\|url>` | List a creator's playlists so you can pick ones to track. |
+| `yt forget <source>` | Stop tracking. Downloaded files and collections stay. `-y` skips the prompt. |
 | `yt config [--init]` | Show settings, or write a config file to edit. |
 | `yt block` | How to block youtube.com without breaking downloads. |
 
@@ -315,4 +484,9 @@ regardless, which handles anything.
 Subtitles are fetched in a second, best-effort pass *after* the video lands, so
 a rate-limit on subtitles can't throw away a finished download. Deleting a
 video file never deletes its catalog entry. The catalog schema migrates itself
-in place, so pulling a newer version won't cost you your library.
+in place, so pulling a newer version won't cost you your library — download
+state, stars and watch progress are keyed on video id and survive untouched.
+
+Earlier versions filed a playlist under its owning channel's id, which merged
+the two into one source. Existing catalogs are repaired automatically on next
+run: the playlist is re-keyed and split back out.

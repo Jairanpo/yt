@@ -81,6 +81,24 @@ PAGE = r"""<!doctype html>
            font-size:13.5px; color:#c3c0b8; }
   #pclose { position:absolute; top:16px; right:20px; background:none; border:none;
             color:#e9e7e3; font-size:26px; cursor:pointer; line-height:1; }
+  .seq { position:absolute; left:6px; top:6px; background:var(--accent);
+         color:#fff; font-size:11px; font-weight:600; padding:2px 7px;
+         border-radius:4px; font-variant-numeric:tabular-nums; }
+  #modal { position:fixed; inset:0; background:rgba(8,8,10,.6); z-index:60;
+           display:none; align-items:center; justify-content:center; }
+  #modal.on { display:flex; }
+  #modal .box { background:var(--panel); border:1px solid var(--edge);
+                border-radius:10px; padding:18px; width:min(380px,92vw);
+                box-shadow:0 8px 30px rgba(0,0,0,.3); }
+  #modal h3 { margin:0 0 4px; font-size:15px; }
+  #modal .who { color:var(--dim); font-size:12.5px; margin-bottom:12px;
+                overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #modal label { display:flex; gap:9px; align-items:center; padding:6px 2px;
+                 font-size:14px; cursor:pointer; }
+  #modal .mk { display:flex; gap:6px; margin-top:12px; }
+  #modal .mk input { flex:1; background:var(--bg); color:var(--ink);
+                     border:1px solid var(--edge); border-radius:6px;
+                     padding:6px 9px; font:inherit; font-size:13.5px; }
   #jobs { position:fixed; right:16px; bottom:16px; width:300px; z-index:40;
           display:flex; flex-direction:column; gap:8px; }
   .job { background:var(--panel); border:1px solid var(--edge); border-radius:8px;
@@ -99,17 +117,27 @@ PAGE = r"""<!doctype html>
 <header>
   <div class="brand">yt<span>·</span>local</div>
   <input type="search" id="q" placeholder="Search titles and descriptions…" autocomplete="off">
-  <select id="chan"><option value="">All channels</option></select>
+  <select id="src"><option value="">Everything</option></select>
+  <select id="sort" title="Sort order (remembered per view)"></select>
   <div class="chips">
     <button class="chip" id="f-have"      aria-pressed="false">Downloaded</button>
     <button class="chip" id="f-starred"   aria-pressed="false">Starred</button>
     <button class="chip" id="f-unwatched" aria-pressed="false">Unwatched</button>
   </div>
+  <button class="chip" id="newcoll" title="New collection">＋ collection</button>
   <div class="stats" id="stats"></div>
 </header>
 <main><div class="grid" id="grid"></div><div class="empty" id="empty" hidden></div></main>
 
 <div id="jobs"></div>
+
+<div id="modal"><div class="box">
+  <h3>Add to collection</h3>
+  <div class="who" id="mwho"></div>
+  <div id="mlist"></div>
+  <div class="mk"><input id="mnew" placeholder="New collection…" autocomplete="off">
+    <button class="act" id="madd">Create</button></div>
+</div></div>
 
 <div id="player">
   <button id="pclose" title="Close (Esc)">&times;</button>
@@ -119,7 +147,9 @@ PAGE = r"""<!doctype html>
 </div>
 
 <script>
-const state = { q:"", channel:"", have:null, starred:false, unwatched:false, videos:[] };
+const state = { q:"", source:"", collection:"", have:null, starred:false,
+                unwatched:false, videos:[], ordered:false, collections:[],
+                sort:"default" };
 const $ = s => document.querySelector(s);
 const fmtDur = s => { if(!s) return ""; s=Math.round(s);
   const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
@@ -139,31 +169,71 @@ const post = (p, body) => api(p, {method:"POST", headers:{"Content-Type":"applic
 function params() {
   const p = new URLSearchParams();
   if (state.q) p.set("q", state.q);
-  if (state.channel) p.set("channel", state.channel);
+  if (state.source) p.set("source", state.source);
+  if (state.collection) p.set("collection", state.collection);
   if (state.have !== null) p.set("have", state.have ? "1" : "0");
   if (state.starred) p.set("starred", "1");
   if (state.unwatched) p.set("unwatched", "1");
   return p.toString();
 }
 
-let chansRendered = false;
+let pickerKey = "";
 async function refresh() {
   const d = await api("/api/state?" + params());
   state.videos = d.videos;
-  if (!chansRendered && d.channels.length) {
-    const sel = $("#chan");
-    for (const c of d.channels) {
-      const o = document.createElement("option");
-      o.value = c.id; o.textContent = `${c.name} (${c.have}/${c.total})`;
-      sel.appendChild(o);
-    }
-    chansRendered = true;
-  }
+  state.ordered = d.ordered;
+  state.collections = d.collections;
+  state.sort = d.sort;
+  buildPicker(d.sources, d.collections);
+  buildSorts(d.sorts, d.sort);
   const s = d.stats;
   $("#stats").textContent =
-    `${s.have}/${s.total} on disk · ${fmtSize(s.bytes)} · ${s.channels} channels`;
+    `${s.have}/${s.total} on disk · ${fmtSize(s.bytes)} · ` +
+    `${s.channels} channels · ${s.playlists} playlists`;
   render(d.videos);
   renderJobs(d.jobs);
+}
+
+function buildPicker(sources, colls) {
+  // Rebuild only when the set actually changes, so the open dropdown and the
+  // current selection survive the 1.2s job-polling refreshes.
+  const key = JSON.stringify([sources.map(s => [s.id, s.have, s.total]),
+                              colls.map(c => [c.id, c.have, c.total])]);
+  if (key === pickerKey) return;
+  pickerKey = key;
+  const sel = $("#src"), keep = sel.value;
+  sel.innerHTML = '<option value="">Everything</option>';
+  const group = (label, items, prefix) => {
+    if (!items.length) return;
+    const g = document.createElement("optgroup"); g.label = label;
+    for (const it of items) {
+      const o = document.createElement("option");
+      o.value = prefix + it.id;
+      o.textContent = `${it.name} (${it.have}/${it.total})`;
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  };
+  group("Channels",  sources.filter(s => s.kind === "channel"),  "s:");
+  group("Playlists", sources.filter(s => s.kind === "playlist"), "s:");
+  group("Collections", colls, "c:");
+  sel.value = keep;
+}
+
+function buildSorts(sorts, current) {
+  const sel = $("#sort");
+  if (!sel.options.length) {
+    for (const s of sorts) {
+      const o = document.createElement("option");
+      o.value = s.key; o.textContent = s.label;
+      sel.appendChild(o);
+    }
+  }
+  // The server decides which sort this view gets, so the dropdown follows it
+  // rather than the other way round -- switching source shows that view's own.
+  // Only when it actually differs: job polling refreshes every 1.2s and must
+  // not reach into a dropdown the user has open.
+  if (sel.value !== current) sel.value = current;
 }
 
 function render(vs) {
@@ -171,15 +241,15 @@ function render(vs) {
   grid.innerHTML = "";
   empty.hidden = vs.length > 0;
   if (!vs.length) {
-    empty.textContent = state.q || state.channel || state.have !== null
+    empty.textContent = state.q || state.source || state.collection || state.have !== null
       ? "Nothing matches those filters."
       : "Catalog is empty — run  yt add @channel  in the terminal.";
     return;
   }
-  for (const v of vs) grid.appendChild(card(v));
+  vs.forEach((v, i) => grid.appendChild(card(v, state.ordered ? i + 1 : null)));
 }
 
-function card(v) {
+function card(v, seq) {
   const el = document.createElement("div");
   el.className = "card";
   const pct = v.have && v.duration && v.progress
@@ -187,7 +257,8 @@ function card(v) {
   el.innerHTML = `
     <div class="thumbwrap">
       <img loading="lazy" src="/thumb/${v.id}" alt="">
-      ${v.have ? '<span class="flag have">on disk</span>' : ''}
+      ${seq ? `<span class="seq">${seq}</span>` : ''}
+      ${v.have ? `<span class="flag have" style="${seq ? 'left:auto;right:6px' : ''}">on disk</span>` : ''}
       ${v.starred ? '<span class="flag" style="left:auto;right:6px;top:6px">★</span>' : ''}
       ${v.duration ? `<span class="badge">${fmtDur(v.duration)}</span>` : ''}
       ${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}
@@ -215,6 +286,12 @@ function card(v) {
                                v.starred = r.starred;
                                star.textContent = r.starred ? "★" : "☆"; };
   row.appendChild(star);
+
+  const plus = document.createElement("button");
+  plus.className = "act icon"; plus.title = "Add to a collection";
+  plus.textContent = "＋";
+  plus.onclick = () => openModal(v);
+  row.appendChild(plus);
 
   if (v.have) {
     const del = document.createElement("button");
@@ -287,8 +364,64 @@ $("#pvideo").addEventListener("ended", async () => {
   close_();
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && $("#player").classList.contains("on")) close_();
+  if (e.key !== "Escape") return;
+  if ($("#modal").classList.contains("on")) closeModal();
+  else if ($("#player").classList.contains("on")) close_();
 });
+
+/* ---- collection modal ---- */
+let modalVideo = null;
+async function openModal(v) {
+  modalVideo = v;
+  $("#mwho").textContent = v.title;
+  $("#mnew").value = "";
+  await paintModal();
+  $("#modal").classList.add("on");
+  $("#mnew").focus();
+}
+async function paintModal() {
+  const mine = new Set((await api(`/api/collections/${modalVideo.id}`))
+                        .collections.map(c => c.id));
+  const list = $("#mlist");
+  list.innerHTML = state.collections.length ? "" :
+    '<div class="sub">No collections yet — make one below.</div>';
+  for (const c of state.collections) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = mine.has(c.id);
+    cb.onchange = async () => {
+      await post(`/api/collect/${modalVideo.id}`,
+                 {collection: c.id, remove: !cb.checked});
+      refresh();
+    };
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(`${c.name} (${c.total})`));
+    list.appendChild(lab);
+  }
+}
+$("#madd").onclick = async () => {
+  const name = $("#mnew").value.trim();
+  if (!name) return;
+  const c = await post("/api/collections", {name});
+  $("#mnew").value = "";
+  if (modalVideo) await post(`/api/collect/${modalVideo.id}`, {collection: c.id});
+  const d = await api("/api/state?" + params());
+  state.collections = d.collections;
+  pickerKey = "";                       // force the picker to pick up the new one
+  await paintModal();
+  refresh();
+};
+$("#mnew").addEventListener("keydown", e => { if (e.key === "Enter") $("#madd").click(); });
+$("#modal").onclick = e => { if (e.target.id === "modal") closeModal(); };
+function closeModal() { $("#modal").classList.remove("on"); modalVideo = null; }
+$("#newcoll").onclick = async () => {
+  modalVideo = null;
+  $("#mwho").textContent = "Create a new collection";
+  $("#mlist").innerHTML = "";
+  $("#mnew").value = "";
+  $("#modal").classList.add("on");
+  $("#mnew").focus();
+};
 
 /* ---- jobs ---- */
 let jobTimer = null;
@@ -325,7 +458,18 @@ $("#q").addEventListener("input", e => {
   state.q = e.target.value.trim();
   clearTimeout(debounce); debounce = setTimeout(refresh, 220);
 });
-$("#chan").addEventListener("change", e => { state.channel = e.target.value; refresh(); });
+$("#src").addEventListener("change", e => {
+  const v = e.target.value;
+  state.source     = v.startsWith("s:") ? v.slice(2) : "";
+  state.collection = v.startsWith("c:") ? v.slice(2) : "";
+  refresh();
+});
+$("#sort").addEventListener("change", async e => {
+  // Persisted against the view you were looking at when you chose it.
+  await post("/api/sort", {sort: e.target.value, source: state.source || null,
+                           collection: state.collection || null});
+  refresh();
+});
 function toggle(id, key) {
   const b = $(id);
   b.onclick = () => {
