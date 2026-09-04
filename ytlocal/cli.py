@@ -310,7 +310,13 @@ def cmd_list(args, cfg, conn):
     print_rows(rows, ordered=ordered and sort == "default")
     if sort != "default":
         note = "saved for this view" if args.save else db.SORTS[sort][0].lower()
-        out(f"{C['dim']}sorted: {note}{C['r']}")
+        back = "  ·  --sort default for its own order" if ordered else ""
+        out(f"{C['dim']}sorted: {note}{back}{C['r']}")
+    elif ordered:
+        # The curated order is the point of these views, but it looks like no
+        # sort at all until you say which one it is.
+        own = "your collection's order" if coll else "the playlist's own order"
+        out(f"{C['dim']}sorted: {own}  ·  --sort newest for by date{C['r']}")
 
 
 def cmd_info(args, cfg, conn):

@@ -209,18 +209,27 @@ class Handler(BaseHTTPRequestHandler):
         # A playlist or collection is shown in its own order, so the UI must not
         # re-sort it; say so explicitly rather than making the page guess. Under
         # an explicit sort the position numbers would be fiction, so drop them.
-        ordered = bool(collection)
-        if source and not ordered:
+        is_playlist = False
+        if source:
             row = self.conn.execute(
                 "SELECT kind FROM sources WHERE id = ?", (source,)).fetchone()
-            ordered = bool(row and row["kind"] == "playlist")
+            is_playlist = bool(row and row["kind"] == "playlist")
+        ordered = bool(collection) or is_playlist
+        # "default" means something different in every view, so name the thing
+        # it actually does here -- otherwise the author's running order reads
+        # as an anonymous fallback and nobody finds their way back to it.
+        sort_labels = {k: v[0] for k, v in db.SORTS.items()}
+        if collection:
+            sort_labels["default"] = "Collection order (yours)"
+        elif is_playlist:
+            sort_labels["default"] = "Playlist order (the author's)"
         return self._json({
             "videos": [row_to_json(r) for r in rows],
             "sources": srcs,
             "collections": colls,
             "ordered": ordered and sort == "default",
             "sort": sort,
-            "sorts": [{"key": k, "label": v[0]} for k, v in db.SORTS.items()],
+            "sorts": [{"key": k, "label": sort_labels[k]} for k in db.SORTS],
             "stats": db.stats(self.conn),
             "jobs": self.server.dl.snapshot(),
         })

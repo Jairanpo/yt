@@ -312,7 +312,10 @@ chosen its own. `--sort default --save` clears a view's setting.
 
 The web library's **sort dropdown** is the same setting: change it there and
 the terminal agrees, and vice versa. Switching sources in the dropdown loads
-that view's own remembered order.
+that view's own remembered order. Its first entry is named for the view you are
+in — *Playlist order (the author's)* on a playlist, *Collection order (yours)*
+on a collection — so the running order the author published is always one pick
+away from a date sort.
 
 ---
 
