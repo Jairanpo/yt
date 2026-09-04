@@ -183,12 +183,14 @@ Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
   the CLI; see [Sorting](#sorting).
 - **＋ collection** on any card adds it to one of your collections, or creates
   a new one on the spot.
-- **Three chips** — Downloaded, Starred, Unwatched — combine with the search.
+- **Four chips** — Downloaded, Starred, Unwatched, Hidden — combine with the
+  search.
 - **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
   reads **Watch** if the file is local and **Download** if it isn't; clicking
   the thumbnail or title does the same thing. **☆** stars, **○ / ✓** marks
-  watched or not, **✕** deletes the file (with a confirm) and keeps the catalog
-  entry. A watched card dims its thumbnail and flags itself *watched*.
+  watched or not, **⊘** hides it, **✕** deletes the file (with a confirm) and
+  keeps the catalog entry. A watched card dims its thumbnail and flags itself
+  *watched*.
 - **Downloads** run in the background — queue as many as you like and progress
   cards appear bottom-right. Each has its own **✕**; a download that finished
   cleanly clears itself after a few seconds, failures wait until you have read
@@ -324,6 +326,43 @@ away from a date sort.
 
 ---
 
+## Hiding what you will never watch
+
+A playlist keeps the slot for a video that has gone private, been deleted, or
+is blocked where you are. YouTube lists it with no title, no length and no
+thumbnail, and there is nothing behind it to fetch. Those entries hide
+themselves the moment they are catalogued:
+
+```console
+$ yt add PLxPIH8wonAFPxADsds96kGz5rtdEj4li4
+added playlist JLPTN5 (Akiko_Japanese_Conversations) — 46 videos catalogued (46 new).
+7 of them are private or deleted — hidden. yt list --hidden to see them
+```
+
+They stay in the catalog rather than being dropped, so the playlist's own
+numbering still reflects what the author published — they are just out of the
+way. `yt list --hidden`, or the **Hidden** chip in the web library, shows them
+whenever you want to look.
+
+The same switch works by hand, for anything you would rather not see again:
+
+```console
+$ yt hide "sponsor read"           # ⊘ out of every view
+$ yt hide "sponsor read"           # toggles back
+$ yt hide --off "sponsor read"     # or say so explicitly
+$ yt hide --source "Danny Lee's Guide Shorts"   # a whole source at once
+```
+
+In the web library the **⊘** button on any card does the same, and **◉** in the
+Hidden view puts one back.
+
+Hiding by hand and hiding-because-unavailable are tracked separately, so a
+sync never overrules you: something you hid stays hidden even if it is
+perfectly available, and a private video you deliberately un-hid stays visible.
+If a video does come back from the dead, the automatic hide lifts itself.
+
+---
+
 ## Collections
 
 Playlists come from YouTube. Collections are yours — any videos, from any
@@ -439,11 +478,12 @@ After that it displays in full, and a later approximation can't overwrite it.
 | --- | --- |
 | `yt add <@handle\|url\|PL…>` | Track a channel or playlist and catalog it. `--limit N` for just the newest N. |
 | `yt sync [source]` | Refresh catalogs; never downloads. `--show-new`, `--limit N`. |
-| `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--sort KEY [--save]`. |
+| `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--hidden`, `--sort KEY [--save]`. |
 | `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--source X`, `-c COLLECTION`, `--audio`. |
 | `yt collect …` | Your own collections — see [Collections](#collections). |
 | `yt watch <id\|phrase>` | Play in mpv/vlc, downloading first if needed. `--mark` marks it watched. |
 | `yt star <id\|phrase>` | Toggle a star. `--on` / `--off` to force. |
+| `yt hide <id\|phrase>` | Hide from every view, or `--off` to show it again. `--source X` / `-c COLLECTION` for a whole view. Private and deleted entries hide themselves. |
 | `yt watched <id\|phrase>` | Toggle watched without playing. `--on` / `--off`, or `--source X` / `-c COLLECTION` to mark a whole view at once. |
 | `yt rm <id\|phrase>` | Delete the file, keep the catalog entry. `-y` skips the prompt. |
 | `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |

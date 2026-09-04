@@ -28,6 +28,8 @@ def row_to_json(r) -> dict:
         "size": r["filesize"],
         "starred": bool(r["starred"]),
         "watched": bool(r["watched"]),
+        "hidden": bool(r["hidden"]),
+        "unavailable": bool(r["unavailable"]),
         "progress": r["progress"],
     }
 
@@ -191,6 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             have=have,
             starred=one("starred") == "1",
             unwatched=one("unwatched") == "1",
+            hidden=one("hidden") == "1",
             limit=int(one("limit", "300")),
             offset=int(one("offset", "0")),
             sort=sort,
@@ -250,6 +253,12 @@ class Handler(BaseHTTPRequestHandler):
             val = int(body.get("value", 0 if row["watched"] else 1))
             db.set_flag(self.conn, vid, "watched", val)
             return self._json({"ok": True, "watched": bool(val)})
+        if action == "hidden":
+            # Unhiding by hand writes 0, which sync then leaves alone -- a
+            # private video you insist on seeing stays seen.
+            val = int(body.get("value", 0 if row["hidden"] else 1))
+            db.set_flag(self.conn, vid, "hidden", val)
+            return self._json({"ok": True, "hidden": bool(val)})
         if action == "progress":
             db.set_flag(self.conn, vid, "progress", float(body.get("value", 0)))
             return self._json({"ok": True})

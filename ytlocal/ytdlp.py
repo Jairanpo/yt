@@ -180,6 +180,10 @@ def sync_source(cfg: dict, url: str, limit=None):
         date = _fmt_date(e.get("upload_date"))
         entries.append({
             "id": vid,
+            # A private, deleted or region-locked entry keeps its slot in the
+            # listing but arrives with no title at all -- nothing to show and
+            # nothing to download.
+            "unavailable": not e.get("title"),
             "title": e.get("title") or vid,
             "duration": int(e["duration"]) if e.get("duration") else None,
             "description": e.get("description") or None,

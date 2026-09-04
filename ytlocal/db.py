@@ -38,7 +38,15 @@ CREATE TABLE IF NOT EXISTS videos (
     starred         INTEGER NOT NULL DEFAULT 0,
     watched         INTEGER NOT NULL DEFAULT 0,
     watched_at      INTEGER,
-    progress        REAL NOT NULL DEFAULT 0
+    progress        REAL NOT NULL DEFAULT 0,
+    -- private, deleted or region-locked: YouTube lists the slot but gives no
+    -- title, so there is nothing to show and nothing to fetch. Maintained by
+    -- sync, and cleared again if the video ever comes back.
+    unavailable     INTEGER NOT NULL DEFAULT 0,
+    -- 0 visible · 1 hidden by you · 2 hidden by sync for being unavailable.
+    -- Keeping those apart is what lets sync tidy up after itself without ever
+    -- overruling a call you made by hand.
+    hidden          INTEGER NOT NULL DEFAULT 0
 );
 
 -- position is the video's index within that source. For a playlist this is
@@ -105,6 +113,7 @@ def connect() -> sqlite3.Connection:
     _migrate_legacy(conn)          # manages the foreign_keys pragma itself
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
     _repair_playlist_ids(conn)
     return conn
 
@@ -172,6 +181,22 @@ def _migrate_legacy(conn) -> None:
         raise sqlite3.IntegrityError(
             f"catalog migration left {len(bad)} orphaned row(s); "
             f"database untouched at {config.DB_PATH}")
+
+
+def _add_missing_columns(conn) -> None:
+    """CREATE TABLE IF NOT EXISTS never adds a column to a catalog that exists."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(videos)")}
+    for col in ("unavailable", "hidden"):
+        if col not in have:
+            conn.execute(
+                f"ALTER TABLE videos ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+    if "unavailable" not in have:
+        # A pre-existing catalog stored these with the id standing in for the
+        # missing title. Name them for what they are on the way through, and
+        # hide them the way a sync would have.
+        conn.execute(
+            "UPDATE videos SET unavailable = 1, hidden = 2 WHERE title = id")
+    conn.commit()
 
 
 def _repair_playlist_ids(conn) -> None:
@@ -284,10 +309,18 @@ def upsert_videos(conn, sid: str, entries: list, prune=False) -> tuple:
             new += 1
         conn.execute(
             """INSERT INTO videos (id, title, description, duration, upload_date,
-                                   date_approx, first_seen)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   date_approx, first_seen, unavailable, hidden)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                    title       = excluded.title,
+                   unavailable = excluded.unavailable,
+                   -- Auto-hide one that has just gone dark, un-hide one that
+                   -- has come back, and never touch a choice you made yourself.
+                   hidden      = CASE
+                       WHEN excluded.unavailable = 1 AND videos.unavailable = 0
+                            AND videos.hidden = 0 THEN 2
+                       WHEN excluded.unavailable = 0 AND videos.hidden = 2 THEN 0
+                       ELSE videos.hidden END,
                    description = COALESCE(excluded.description, videos.description),
                    duration    = COALESCE(excluded.duration, videos.duration),
                    -- never let a fresh guess overwrite a confirmed date
@@ -300,7 +333,8 @@ def upsert_videos(conn, sid: str, entries: list, prune=False) -> tuple:
                                        AND videos.upload_date IS NOT NULL
                                       THEN 0 ELSE excluded.date_approx END""",
             (vid, e["title"], e.get("description"), e.get("duration"),
-             e.get("upload_date"), e.get("date_approx", 0), now()))
+             e.get("upload_date"), e.get("date_approx", 0), now(),
+             int(bool(e.get("unavailable"))), 2 if e.get("unavailable") else 0))
         conn.execute(
             """INSERT INTO source_videos (source_id, video_id, position)
                VALUES (?, ?, ?)
@@ -336,7 +370,7 @@ def get_video(conn, vid: str):
 
 
 def query_videos(conn, source=None, collection=None, q=None, have=None,
-                 starred=None, unwatched=False, limit=None, offset=0,
+                 starred=None, unwatched=False, hidden=False, limit=None, offset=0,
                  sort=None) -> list:
     """Rows for one view. `sort` is a key from SORTS; None means "default"."""
     args, joins, where = [], "", []
@@ -363,6 +397,8 @@ def query_videos(conn, source=None, collection=None, q=None, have=None,
         where.append("v.starred = 1")
     if unwatched:
         where.append("v.watched = 0")
+    # Hidden is the whole of visibility: unavailable only explains why.
+    where.append("v.hidden != 0" if hidden else "v.hidden = 0")
 
     sql = _SEL + joins
     if where:
@@ -396,6 +432,10 @@ def resolve_video(conn, needle: str, source=None, collection=None):
         if row:
             return row, []
     hits = query_videos(conn, source=source, collection=collection, q=needle, limit=25)
+    if not hits:
+        # Naming a hidden video is how you unhide it, so it has to be findable.
+        hits = query_videos(conn, source=source, collection=collection, q=needle,
+                            hidden=True, limit=25)
     if len(hits) == 1:
         return hits[0], []
     return None, hits
@@ -430,7 +470,7 @@ def clear_downloaded(conn, vid: str) -> None:
 
 
 def set_flag(conn, vid: str, field: str, value) -> None:
-    assert field in {"starred", "watched", "progress"}
+    assert field in {"starred", "watched", "progress", "hidden"}
     extra = ", watched_at = ?" if field == "watched" else ""
     args = [value, now(), vid] if field == "watched" else [value, vid]
     conn.execute(f"UPDATE videos SET {field} = ?{extra} WHERE id = ?", args)
@@ -567,14 +607,18 @@ def set_sort(conn, sort: str, source=None, collection=None) -> None:
 # --- misc -----------------------------------------------------------------
 
 def stats(conn) -> dict:
+    # Counts describe the catalog you actually see; hidden rows are their own
+    # tally rather than a silent addition to the total.
     row = conn.execute(
         """SELECT COUNT(*) AS total,
                   SUM(downloaded_path IS NOT NULL) AS have,
                   SUM(COALESCE(filesize, 0))       AS bytes,
                   SUM(starred)                     AS starred,
                   SUM(downloaded_path IS NOT NULL AND watched = 0) AS unwatched
-             FROM videos""").fetchone()
+             FROM videos WHERE hidden = 0""").fetchone()
     d = {k: (row[k] or 0) for k in row.keys()}
+    d["hidden"] = conn.execute(
+        "SELECT COUNT(*) FROM videos WHERE hidden != 0").fetchone()[0]
     d["channels"] = conn.execute(
         "SELECT COUNT(*) FROM sources WHERE kind = 'channel'").fetchone()[0]
     d["playlists"] = conn.execute(

@@ -50,6 +50,9 @@ PAGE = r"""<!doctype html>
           color:#fff; font-size:11px; padding:2px 7px; border-radius:4px; }
   .flag.have { background:var(--ok); }
   .card.watched .thumbwrap img { opacity:.45; }
+  .card.gone .thumbwrap { background:repeating-linear-gradient(45deg,
+      #26262c, #26262c 8px, #2c2c33 8px, #2c2c33 16px); cursor:default; }
+  .card.gone .thumbwrap img, .card.gone .title { opacity:.5; }
   .flag.seen { left:auto; right:6px; bottom:6px; top:auto; background:rgba(0,0,0,.72);
                color:#cfcbc2; }
   .bar { position:absolute; left:0; right:0; bottom:0; height:3px;
@@ -69,7 +72,7 @@ PAGE = r"""<!doctype html>
   button.act.primary { background:var(--accent); border-color:var(--accent);
                        color:#fff; }
   button.act:disabled { opacity:.55; cursor:default; }
-  .icon { flex:0 0 auto; width:34px; }
+  .icon { flex:0 0 auto; width:30px; padding:5px 4px; }
   .empty { color:var(--dim); text-align:center; padding:64px 20px; }
   /* player overlay */
   #player { position:fixed; inset:0; background:rgba(8,8,10,.94); z-index:50;
@@ -142,6 +145,8 @@ PAGE = r"""<!doctype html>
     <button class="chip" id="f-have"      aria-pressed="false">Downloaded</button>
     <button class="chip" id="f-starred"   aria-pressed="false">Starred</button>
     <button class="chip" id="f-unwatched" aria-pressed="false">Unwatched</button>
+    <button class="chip" id="f-hidden" aria-pressed="false"
+            title="Show what is hidden — private or deleted entries, and anything you hid">Hidden</button>
   </div>
   <button class="chip" id="newcoll" title="New collection">＋ collection</button>
   <div class="stats" id="stats"></div>
@@ -167,7 +172,7 @@ PAGE = r"""<!doctype html>
 
 <script>
 const state = { q:"", source:"", collection:"", have:null, starred:false,
-                unwatched:false, videos:[], ordered:false, collections:[],
+                unwatched:false, hidden:false, videos:[], ordered:false, collections:[],
                 sort:"default" };
 const $ = s => document.querySelector(s);
 const fmtDur = s => { if(!s) return ""; s=Math.round(s);
@@ -193,6 +198,7 @@ function params() {
   if (state.have !== null) p.set("have", state.have ? "1" : "0");
   if (state.starred) p.set("starred", "1");
   if (state.unwatched) p.set("unwatched", "1");
+  if (state.hidden) p.set("hidden", "1");
   return p.toString();
 }
 
@@ -208,7 +214,8 @@ async function refresh() {
   const s = d.stats;
   $("#stats").textContent =
     `${s.have}/${s.total} on disk · ${fmtSize(s.bytes)} · ` +
-    `${s.channels} channels · ${s.playlists} playlists`;
+    `${s.channels} channels · ${s.playlists} playlists` +
+    (s.hidden ? ` · ${s.hidden} hidden` : "");
   render(d.videos);
   renderJobs(d.jobs);
 }
@@ -260,7 +267,9 @@ function render(vs) {
   grid.innerHTML = "";
   empty.hidden = vs.length > 0;
   if (!vs.length) {
-    empty.textContent = state.q || state.source || state.collection || state.have !== null
+    empty.textContent = state.hidden
+      ? "Nothing is hidden."
+      : state.q || state.source || state.collection || state.have !== null
       ? "Nothing matches those filters."
       : "Catalog is empty — run  yt add @channel  in the terminal.";
     return;
@@ -270,7 +279,8 @@ function render(vs) {
 
 function card(v, seq) {
   const el = document.createElement("div");
-  el.className = "card" + (v.watched ? " watched" : "");
+  el.className = "card" + (v.watched ? " watched" : "")
+                        + (v.unavailable ? " gone" : "");
   const pct = v.have && v.duration && v.progress
               ? Math.min(100, 100 * v.progress / v.duration) : 0;
   el.innerHTML = `
@@ -289,16 +299,32 @@ function card(v, seq) {
       <div class="sub"></div>
       <div class="row"></div>
     </div>`;
-  el.querySelector(".title").textContent = v.title;
-  el.querySelector(".sub").textContent =
-    [v.channel, fmtDate(v), v.have ? fmtSize(v.size) : null].filter(Boolean).join(" · ");
+  // An unavailable entry has no title of its own -- the id stood in for one.
+  el.querySelector(".title").textContent =
+    v.unavailable ? "Private or deleted video" : v.title;
+  el.querySelector(".sub").textContent = v.unavailable
+    ? `${v.id} · nothing to play`
+    : [v.channel, fmtDate(v), v.have ? fmtSize(v.size) : null].filter(Boolean).join(" · ");
 
   const row = el.querySelector(".row");
   const main = document.createElement("button");
   main.className = "act primary";
   main.textContent = v.have ? "Watch" : "Download";
   main.onclick = () => v.have ? open_(v) : grab(v, main);
+  main.disabled = v.unavailable && !v.have;
   row.appendChild(main);
+
+  const hide = document.createElement("button");
+  hide.className = "act icon";
+  hide.textContent = v.hidden ? "◉" : "⊘";
+  hide.title = v.hidden ? "Unhide — keep showing this one" : "Hide from every view";
+  hide.onclick = async () => {
+    const r = await post(`/api/hidden/${v.id}`);
+    v.hidden = r.hidden;
+    // Either way it no longer belongs in the list it is sitting in.
+    refresh();
+  };
+  row.appendChild(hide);
 
   const star = document.createElement("button");
   star.className = "act icon"; star.title = "Star";
@@ -578,6 +604,7 @@ function toggle(id, key) {
   };
 }
 toggle("#f-have", "have"); toggle("#f-starred", "starred"); toggle("#f-unwatched", "unwatched");
+toggle("#f-hidden", "hidden");
 
 refresh();
 </script>

@@ -55,7 +55,7 @@ def fmt_row(v, seq=None, width=None):
     width = width or max(36, (shutil.get_terminal_size((100, 24)).columns) - 48)
     mark = f"{C['ok']}●{C['r']}" if v["downloaded_path"] else f"{C['dim']}○{C['r']}"
     star = "★" if v["starred"] else " "
-    title = v["title"]
+    title = "(private or deleted)" if v["unavailable"] else v["title"]
     if len(title) > width:
         title = title[: width - 1] + "…"
     # Watched titles recede, so what is left to see stands out in a long list.
@@ -121,6 +121,10 @@ def add_source(cfg, conn, ref, limit=None, quiet=False):
     owner = f" {C['dim']}({meta['owner']}){C['r']}" if meta.get("owner") else ""
     out(f"{C['ok']}added{C['r']} {label} {C['b']}{name}{C['r']}{owner} — "
         f"{total} videos catalogued ({new} new). Nothing downloaded yet.")
+    gone = sum(1 for e in entries if e.get("unavailable"))
+    if gone:
+        out(f"{C['dim']}{gone} of them are private or deleted — hidden. "
+            f"yt list --hidden to see them{C['r']}")
     return name, kind
 
 
@@ -145,7 +149,7 @@ def cmd_sync(args, cfg, conn):
     if not targets:
         die("nothing tracked yet — start with: yt add @somechannel")
 
-    grand_new = 0
+    grand_new = grand_gone = 0
     for src in targets:
         name = src["name"] or src["handle"] or src["url"]
         try:
@@ -163,10 +167,14 @@ def cmd_sync(args, cfg, conn):
         tag = "▤" if src["kind"] == "playlist" else "▸"
         flag = f"{C['acc']}+{new} new{C['r']}" if new else f"{C['dim']}no change{C['r']}"
         out(f"{C['ok']}✓{C['r']} {tag} {name:<32.32} {total:>5} catalogued  {flag}")
+        grand_gone += sum(1 for e in entries if e.get("unavailable"))
         if new and args.show_new:
             for v in db.query_videos(conn, source=src["id"], limit=new):
                 out("    " + fmt_row(v))
     out(f"\n{grand_new} new video(s) across {len(targets)} source(s).")
+    if grand_gone:
+        out(f"{C['dim']}{grand_gone} entries are private or deleted "
+            f"(yt list --hidden){C['r']}")
 
 
 def cmd_sources(args, cfg, conn):
@@ -306,8 +314,8 @@ def cmd_list(args, cfg, conn):
         db.set_sort(conn, sort, source=source, collection=coll)
     rows = db.query_videos(conn, source=source, collection=coll, q=args.query,
                            have=have, starred=args.starred,
-                           unwatched=args.unwatched, limit=args.number,
-                           sort=sort)
+                           unwatched=args.unwatched, hidden=args.hidden,
+                           limit=args.number, sort=sort)
     if not rows:
         out("nothing matches.")
         return
@@ -367,6 +375,9 @@ def cmd_status(args, cfg, conn):
     out(f"{C['b']}on disk{C['r']}   {s['have']} files · {human_size(s['bytes'])} · "
         f"{s['unwatched']} unwatched")
     out(f"{C['b']}starred{C['r']}   {s['starred']}")
+    if s["hidden"]:
+        out(f"{C['b']}hidden{C['r']}    {s['hidden']}  {C['dim']}"
+            f"(private, deleted, or hidden by you — yt list --hidden){C['r']}")
     out(f"{C['b']}media{C['r']}     {cfg['media_dir']}")
     out(f"{C['b']}catalog{C['r']}   {config.DB_PATH}")
     if gone:
@@ -484,6 +495,38 @@ def cmd_star(args, cfg, conn):
         val = 0
     db.set_flag(conn, v["id"], "starred", val)
     out(("★ starred " if val else "☆ unstarred ") + v["title"])
+
+
+def cmd_hide(args, cfg, conn):
+    """Take something out of every view -- or put it back."""
+    if args.source or args.collection:
+        return _hide_bulk(args, conn)
+    if not args.target:
+        die("give a video id/phrase, or --source/--collection to hide a whole view")
+    v = _resolve_or_die(conn, " ".join(args.target))
+    val = 0 if (v["hidden"] and not args.on) else 1
+    if args.off:
+        val = 0
+    db.set_flag(conn, v["id"], "hidden", val)
+    out(("⊘ hidden  " if val else "◉ showing ") + v["title"])
+
+
+def _hide_bulk(args, conn):
+    if args.target:
+        die("give a video, or --source/--collection — not both")
+    source = _source_or_die(conn, args.source)["id"] if args.source else None
+    coll = _collection_or_die(conn, args.collection)["id"] if args.collection else None
+    val = 0 if args.off else 1
+    # Hiding reads the visible view; unhiding reads the hidden one.
+    rows = db.query_videos(conn, source=source, collection=coll, hidden=(val == 0))
+    if not rows:
+        out("nothing to change there.")
+        return
+    for r in rows:
+        db.set_flag(conn, r["id"], "hidden", val)
+    where = args.source or args.collection
+    out(f"{C['ok']}{len(rows)}{C['r']} videos {'hidden in' if val else 'shown again in'} "
+        f"{C['b']}{where}{C['r']}")
 
 
 def cmd_watched(args, cfg, conn):
@@ -720,6 +763,8 @@ def build_parser():
     l.add_argument("--missing", action="store_true", help="only catalog-only entries")
     l.add_argument("--starred", action="store_true")
     l.add_argument("--unwatched", action="store_true")
+    l.add_argument("--hidden", action="store_true",
+                   help="show only what is hidden, including private entries")
     l.add_argument("--sort", choices=db.SORT_KEYS,
                    help="order to list in; default keeps the view's own order")
     l.add_argument("--save", action="store_true",
@@ -760,6 +805,16 @@ def build_parser():
     wd.add_argument("--source", help="every video in a channel or playlist")
     wd.add_argument("-c", "--collection", help="every video in a collection")
     wd.set_defaults(fn=cmd_watched)
+
+    hd = sub.add_parser("hide", help="hide a video from every view (or unhide it)",
+                        description="Private and deleted entries hide themselves "
+                                    "on sync. This is for the rest.")
+    hd.add_argument("target", nargs="*")
+    hd.add_argument("--on", action="store_true", help="hide, never toggle back")
+    hd.add_argument("--off", action="store_true", help="show it again")
+    hd.add_argument("--source", help="every video in a channel or playlist")
+    hd.add_argument("-c", "--collection", help="every video in a collection")
+    hd.set_defaults(fn=cmd_hide)
 
     co = sub.add_parser("collect", help="your own local collections",
                         description="Group videos from any source into your own "
