@@ -58,6 +58,9 @@ def fmt_row(v, seq=None, width=None):
     title = v["title"]
     if len(title) > width:
         title = title[: width - 1] + "…"
+    # Watched titles recede, so what is left to see stands out in a long list.
+    if v["watched"]:
+        title = f"{C['dim']}{title}{C['r']}"
     # In an ordered view the sequence number matters more than the date does.
     lead = f"{C['dim']}{seq:>3}{C['r']} " if seq is not None else ""
     return (f"{lead}{mark}{star} {C['dim']}{v['id']}{C['r']}  {fmt_date(v)}  "
@@ -67,7 +70,10 @@ def fmt_row(v, seq=None, width=None):
 def print_rows(rows, ordered=False):
     for i, v in enumerate(rows, 1):
         out(fmt_row(v, seq=i if ordered else None))
-    out(f"\n{C['dim']}{len(rows)} shown · ● = on disk, ○ = catalog only{C['r']}")
+    note = "● = on disk, ○ = catalog only"
+    if any(v["watched"] for v in rows):
+        note += ", dimmed = watched"
+    out(f"\n{C['dim']}{len(rows)} shown · {note}{C['r']}")
 
 
 def _source_or_die(conn, needle):
@@ -480,6 +486,39 @@ def cmd_star(args, cfg, conn):
     out(("★ starred " if val else "☆ unstarred ") + v["title"])
 
 
+def cmd_watched(args, cfg, conn):
+    """Mark something watched without playing it -- or undo that."""
+    if args.source or args.collection:
+        return _watched_bulk(args, conn)
+    if not args.target:
+        die("give a video id/phrase, or --source/--collection to mark a whole view")
+    v = _resolve_or_die(conn, " ".join(args.target))
+    val = 0 if (v["watched"] and not args.on) else 1
+    if args.off:
+        val = 0
+    db.set_flag(conn, v["id"], "watched", val)
+    out(("✓ watched   " if val else "○ unwatched ") + v["title"])
+
+
+def _watched_bulk(args, conn):
+    """A whole channel, playlist or collection at once -- catching up in bulk."""
+    if args.target:
+        die("give a video, or --source/--collection — not both")
+    source = _source_or_die(conn, args.source)["id"] if args.source else None
+    coll = _collection_or_die(conn, args.collection)["id"] if args.collection else None
+    val = 0 if args.off else 1
+    rows = db.query_videos(conn, source=source, collection=coll)
+    changed = [r for r in rows if bool(r["watched"]) != bool(val)]
+    if not changed:
+        out("nothing to change there.")
+        return
+    for r in changed:
+        db.set_flag(conn, r["id"], "watched", val)
+    where = args.source or args.collection
+    out(f"{C['ok']}{len(changed)}{C['r']} videos marked "
+        f"{'watched' if val else 'unwatched'} in {C['b']}{where}{C['r']}")
+
+
 # --- collections ----------------------------------------------------------
 
 def cmd_collect(args, cfg, conn):
@@ -633,6 +672,7 @@ def build_parser():
               yt list "linear algebra"         browse it in order
               yt list --sort oldest --save     remember an order for a view
               yt get "eigenvectors"            download one
+              yt watched "eigenvectors"        mark it done without playing
               yt collect new "ML basics"       build your own study queue
               yt collect add "ML basics" --source "linear algebra"
               yt serve                         browse + watch at localhost:8420
@@ -710,6 +750,16 @@ def build_parser():
     st.add_argument("--on", action="store_true")
     st.add_argument("--off", action="store_true")
     st.set_defaults(fn=cmd_star)
+
+    wd = sub.add_parser("watched", help="mark as watched (or not) without playing",
+                        description="Toggles one video, or marks a whole "
+                                    "channel, playlist or collection at once.")
+    wd.add_argument("target", nargs="*")
+    wd.add_argument("--on", action="store_true", help="mark watched, never toggle off")
+    wd.add_argument("--off", action="store_true", help="mark unwatched")
+    wd.add_argument("--source", help="every video in a channel or playlist")
+    wd.add_argument("-c", "--collection", help="every video in a collection")
+    wd.set_defaults(fn=cmd_watched)
 
     co = sub.add_parser("collect", help="your own local collections",
                         description="Group videos from any source into your own "

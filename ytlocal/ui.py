@@ -49,6 +49,9 @@ PAGE = r"""<!doctype html>
   .flag { position:absolute; left:6px; top:6px; background:rgba(0,0,0,.72);
           color:#fff; font-size:11px; padding:2px 7px; border-radius:4px; }
   .flag.have { background:var(--ok); }
+  .card.watched .thumbwrap img { opacity:.45; }
+  .flag.seen { left:auto; right:6px; bottom:6px; top:auto; background:rgba(0,0,0,.72);
+               color:#cfcbc2; }
   .bar { position:absolute; left:0; right:0; bottom:0; height:3px;
          background:rgba(255,255,255,.18); }
   .bar i { display:block; height:100%; background:var(--accent); }
@@ -267,7 +270,7 @@ function render(vs) {
 
 function card(v, seq) {
   const el = document.createElement("div");
-  el.className = "card";
+  el.className = "card" + (v.watched ? " watched" : "");
   const pct = v.have && v.duration && v.progress
               ? Math.min(100, 100 * v.progress / v.duration) : 0;
   el.innerHTML = `
@@ -277,6 +280,8 @@ function card(v, seq) {
       ${v.have ? `<span class="flag have" style="${seq ? 'left:auto;right:6px' : ''}">on disk</span>` : ''}
       ${v.starred ? '<span class="flag" style="left:auto;right:6px;top:6px">★</span>' : ''}
       ${v.duration ? `<span class="badge">${fmtDur(v.duration)}</span>` : ''}
+      <span class="flag seen" style="${v.duration ? 'bottom:26px' : ''}"
+            ${v.watched ? '' : 'hidden'}>watched</span>
       ${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}
     </div>
     <div class="meta">
@@ -302,6 +307,24 @@ function card(v, seq) {
                                v.starred = r.starred;
                                star.textContent = r.starred ? "★" : "☆"; };
   row.appendChild(star);
+
+  const seen = document.createElement("button");
+  seen.className = "act icon";
+  const paintSeen = () => {
+    seen.textContent = v.watched ? "✓" : "○";
+    seen.title = v.watched ? "Mark as not watched" : "Mark as watched";
+    el.classList.toggle("watched", !!v.watched);
+    el.querySelector(".flag.seen").hidden = !v.watched;
+  };
+  paintSeen();
+  seen.onclick = async () => {
+    const r = await post(`/api/watched/${v.id}`);
+    v.watched = r.watched;
+    paintSeen();
+    // The Unwatched filter is showing a list this video may have just left.
+    if (state.unwatched) refresh();
+  };
+  row.appendChild(seen);
 
   const plus = document.createElement("button");
   plus.className = "act icon"; plus.title = "Add to a collection";
@@ -352,6 +375,7 @@ function open_(v) {
   saveTimer = setInterval(() => {
     if (!current || vid.paused) return;
     post(`/api/progress/${current.id}`, {value: vid.currentTime}).catch(()=>{});
+    markIfFinished(vid);
   }, 5000);
 }
 async function attachSubs(id, vid) {
@@ -367,9 +391,19 @@ async function attachSubs(id, vid) {
   });
 }
 
+// Credits, an outro, a tab closed on the last thirty seconds: near enough the
+// end counts as watched, since "ended" only fires on the very last frame.
+function markIfFinished(vid) {
+  if (!current || current.watched || !vid.duration) return;
+  if (vid.currentTime / vid.duration < 0.92) return;
+  current.watched = true;
+  post(`/api/watched/${current.id}`, {value: 1}).catch(()=>{});
+}
+
 function close_() {
   const vid = $("#pvideo");
   if (current) post(`/api/progress/${current.id}`, {value: vid.currentTime}).catch(()=>{});
+  markIfFinished(vid);
   clearInterval(saveTimer);
   vid.pause(); vid.removeAttribute("src"); vid.load();
   $("#player").classList.remove("on");
@@ -377,7 +411,10 @@ function close_() {
 }
 $("#pclose").onclick = close_;
 $("#pvideo").addEventListener("ended", async () => {
-  if (current) await post(`/api/watched/${current.id}`, {value: 1});
+  if (current && !current.watched) {
+    current.watched = true;
+    await post(`/api/watched/${current.id}`, {value: 1});
+  }
   close_();
 });
 document.addEventListener("keydown", e => {

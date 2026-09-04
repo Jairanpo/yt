@@ -186,15 +186,20 @@ Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
 - **Three chips** — Downloaded, Starred, Unwatched — combine with the search.
 - **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
   reads **Watch** if the file is local and **Download** if it isn't; clicking
-  the thumbnail or title does the same thing. **☆** stars, **✕** deletes the
-  file (with a confirm) and keeps the catalog entry.
+  the thumbnail or title does the same thing. **☆** stars, **○ / ✓** marks
+  watched or not, **✕** deletes the file (with a confirm) and keeps the catalog
+  entry. A watched card dims its thumbnail and flags itself *watched*.
 - **Downloads** run in the background — queue as many as you like and progress
-  toasts appear bottom-right. Click a finished toast to dismiss it. You can
-  keep browsing and watching while they run.
+  cards appear bottom-right. Each has its own **✕**; a download that finished
+  cleanly clears itself after a few seconds, failures wait until you have read
+  them, and **Esc** clears the stack. Dismissing one that is still running only
+  hides the card — the download carries on. You can keep browsing and watching
+  while they run.
 - **The player** opens over the page. Subtitles attach automatically when a
   `.vtt` sidecar exists. Seeking works (media is served with HTTP Range).
   Position is saved every five seconds and restored next time — cards show a
-  resume bar. Finishing a video marks it watched. **Esc** closes.
+  resume bar. Reaching the end marks it watched, and so does leaving in the last
+  8% — outros and credits do not have to be sat through. **Esc** closes.
 
 ---
 
@@ -439,6 +444,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt collect …` | Your own collections — see [Collections](#collections). |
 | `yt watch <id\|phrase>` | Play in mpv/vlc, downloading first if needed. `--mark` marks it watched. |
 | `yt star <id\|phrase>` | Toggle a star. `--on` / `--off` to force. |
+| `yt watched <id\|phrase>` | Toggle watched without playing. `--on` / `--off`, or `--source X` / `-c COLLECTION` to mark a whole view at once. |
 | `yt rm <id\|phrase>` | Delete the file, keep the catalog entry. `-y` skips the prompt. |
 | `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |
 | `yt status` | Counts and disk use; also reconciles the catalog with what's on disk. |
