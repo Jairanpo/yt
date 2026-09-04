@@ -408,13 +408,15 @@ async function attachSubs(id, vid) {
   let langs = [];
   try { langs = (await api(`/api/subs/${id}`)).langs || []; } catch (e) { return; }
   if (current?.id !== id) return;           // player moved on while we waited
-  langs.forEach((lang, i) => {
+  // Attached but off: no `default` track, so the subtitles sit in the player's
+  // CC menu until you pick one rather than covering the picture uninvited.
+  langs.forEach(lang => {
     const t = document.createElement("track");
     t.kind = "subtitles"; t.label = lang; t.srclang = lang.split("-")[0];
     t.src = `/subs/${id}/${encodeURIComponent(lang)}`;
-    if (i === 0) t.default = true;
     vid.appendChild(t);
   });
+  for (const track of vid.textTracks) track.mode = "disabled";
 }
 
 // Credits, an outro, a tab closed on the last thirty seconds: near enough the
