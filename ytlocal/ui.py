@@ -79,8 +79,13 @@ PAGE = r"""<!doctype html>
   #pmeta .sub { color:#9b988f; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
-  #pclose { position:absolute; top:16px; right:20px; background:none; border:none;
-            color:#e9e7e3; font-size:26px; cursor:pointer; line-height:1; }
+  /* z-index matters: the button sits over the video's top-right corner, and
+     without it the <video> swallows every click that lands on the glyph. */
+  #pclose { position:absolute; top:10px; right:14px; z-index:2;
+            width:40px; height:40px; display:grid; place-items:center; padding:0;
+            background:none; border:none; border-radius:8px; color:#e9e7e3;
+            font-size:26px; line-height:1; cursor:pointer; }
+  #pclose:hover { background:rgba(233,231,227,.14); }
   .seq { position:absolute; left:6px; top:6px; background:var(--accent);
          color:#fff; font-size:11px; font-weight:600; padding:2px 7px;
          border-radius:4px; font-variant-numeric:tabular-nums; }
@@ -101,10 +106,21 @@ PAGE = r"""<!doctype html>
                      padding:6px 9px; font:inherit; font-size:13.5px; }
   #jobs { position:fixed; right:16px; bottom:16px; width:300px; z-index:40;
           display:flex; flex-direction:column; gap:8px; }
-  .job { background:var(--panel); border:1px solid var(--edge); border-radius:8px;
-         padding:9px 11px; font-size:12.5px; box-shadow:var(--shadow); }
+  .job { position:relative; background:var(--panel); border:1px solid var(--edge);
+         border-radius:8px; padding:9px 11px; font-size:12.5px;
+         box-shadow:var(--shadow); }
   .job .t { font-weight:550; overflow:hidden; text-overflow:ellipsis;
-            white-space:nowrap; }
+            white-space:nowrap; padding-right:18px; }
+  .job .x { position:absolute; top:4px; right:5px; width:20px; height:20px;
+            display:grid; place-items:center; border:0; border-radius:4px;
+            background:none; color:var(--dim); font:inherit; font-size:14px;
+            line-height:1; cursor:pointer; }
+  .job .x:hover { background:var(--edge); color:var(--ink); }
+  #jobs .clearall { align-self:flex-end; border:1px solid var(--edge);
+                    border-radius:6px; background:var(--panel); color:var(--dim);
+                    font:inherit; font-size:12px; padding:3px 8px; cursor:pointer;
+                    box-shadow:var(--shadow); }
+  #jobs .clearall:hover { color:var(--ink); }
   .job .d { color:var(--dim); font-variant-numeric:tabular-nums; }
   .job .track { height:3px; background:var(--edge); border-radius:2px; margin-top:6px; }
   .job .track i { display:block; height:100%; background:var(--accent);
@@ -312,6 +328,7 @@ function card(v, seq) {
 
 async function grab(v, btn) {
   btn.disabled = true; btn.textContent = "Queued…";
+  dismissed.delete(v.id);
   try { await post(`/api/get/${v.id}`); pollJobs(); }
   catch (e) { btn.disabled = false; btn.textContent = "Retry"; alert(e.message); }
 }
@@ -367,6 +384,7 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   if ($("#modal").classList.contains("on")) closeModal();
   else if ($("#player").classList.contains("on")) close_();
+  else dismissAllJobs();
 });
 
 /* ---- collection modal ---- */
@@ -424,26 +442,69 @@ $("#newcoll").onclick = async () => {
 };
 
 /* ---- jobs ---- */
-let jobTimer = null;
+let jobTimer = null, lastJobs = [];
+// Cards the user closed. A finished job is dropped server-side too; a running
+// one only loses its card, since the download itself keeps going.
+const dismissed = new Set();
+// Pending auto-dismiss timers for jobs that finished cleanly, keyed by id.
+const fading = new Map();
+const AUTO_DISMISS_MS = 4000;
+
+function dismissJob(j) {
+  dismissed.add(j.id);
+  clearTimeout(fading.get(j.id));
+  fading.delete(j.id);
+  if (j.state !== "queued" && j.state !== "running")
+    post("/api/jobs/clear", {id: j.id}).catch(() => {});
+  renderJobs(lastJobs);
+}
 function renderJobs(jobs) {
+  lastJobs = jobs;
+  // Forget ids the server no longer reports, so a re-download shows up again.
+  const live = new Set(jobs.map(j => j.id));
+  for (const id of [...dismissed]) if (!live.has(id)) dismissed.delete(id);
+  for (const [id, t] of [...fading])
+    if (!live.has(id)) { clearTimeout(t); fading.delete(id); }
+  // A clean download announces itself and then gets out of the way on its own.
+  // Failures stay put: they carry a message worth reading.
+  for (const j of jobs)
+    if (j.state === "done" && !dismissed.has(j.id) && !fading.has(j.id))
+      fading.set(j.id, setTimeout(() => dismissJob(j), AUTO_DISMISS_MS));
+  // A job dismissed while running is reaped once it settles.
+  for (const j of jobs)
+    if (dismissed.has(j.id) && j.state !== "queued" && j.state !== "running")
+      post("/api/jobs/clear", {id: j.id}).catch(() => {});
+
   const box = $("#jobs");
   box.innerHTML = "";
-  for (const j of jobs) {
+  const shown = jobs.filter(j => !dismissed.has(j.id));
+  if (shown.length > 1) {
+    const all = document.createElement("button");
+    all.className = "clearall";
+    all.textContent = `Dismiss all (${shown.length})`;
+    all.title = "Close every card (downloads in progress keep running)";
+    all.onclick = () => shown.forEach(dismissJob);
+    box.appendChild(all);
+  }
+  for (const j of shown) {
     const el = document.createElement("div");
     el.className = "job" + (j.state === "error" ? " error" : "");
     const pct = Math.round(100 * (j.fraction || 0));
-    el.innerHTML = `<div class="t"></div><div class="d"></div>
+    el.innerHTML = `<button class="x" title="Dismiss">✕</button>
+      <div class="t"></div><div class="d"></div>
       <div class="track"><i style="width:${pct}%"></i></div>`;
     el.querySelector(".t").textContent = j.title;
     el.querySelector(".d").textContent =
       j.state === "error" ? j.error : (j.state === "done" ? "done" : j.detail);
-    if (j.state !== "queued" && j.state !== "running")
-      el.onclick = () => { post("/api/jobs/clear"); refresh(); };
+    el.querySelector(".x").onclick = e => { e.stopPropagation(); dismissJob(j); };
     box.appendChild(el);
   }
   const busy = jobs.some(j => j.state === "queued" || j.state === "running");
   clearInterval(jobTimer);
   if (busy) jobTimer = setInterval(pollJobs, 1200);
+}
+function dismissAllJobs() {
+  lastJobs.filter(j => !dismissed.has(j.id)).forEach(dismissJob);
 }
 async function pollJobs() {
   const d = await api("/api/jobs");

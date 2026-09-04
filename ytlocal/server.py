@@ -125,6 +125,14 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         parts = [p for p in url.path.split("/") if p]
         try:
+            if url.path == "/api/jobs/clear":
+                vid = (self._body().get("id") or "").strip()
+                if vid:
+                    if not _ID_RE.match(vid):
+                        return self._fail(400, "bad video id")
+                    return self._json({"ok": self.server.dl.forget(vid)})
+                self.server.dl.forget_finished()
+                return self._json({"ok": True})
             if len(parts) == 3 and parts[0] == "api":
                 action, vid = parts[1], parts[2]
                 if not _ID_RE.match(vid):
@@ -146,9 +154,6 @@ class Handler(BaseHTTPRequestHandler):
                 db.set_sort(self.conn, sort, source=body.get("source") or None,
                             collection=int(coll) if coll else None)
                 return self._json({"ok": True, "sort": sort})
-            if url.path == "/api/jobs/clear":
-                self.server.dl.forget_finished()
-                return self._json({"ok": True})
             return self._fail(404, "not found")
         except ConnectionError:
             self.close_connection = True

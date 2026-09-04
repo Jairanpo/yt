@@ -58,6 +58,15 @@ class Downloader:
             for vid in [k for k, j in self.jobs.items() if j.state in ("done", "error")]:
                 del self.jobs[vid]
 
+    def forget(self, vid):
+        """Drop one finished job. Running jobs stay: the UI hides them instead."""
+        with self.lock:
+            job = self.jobs.get(vid)
+            if job is None or job.state in ("queued", "running"):
+                return False
+            del self.jobs[vid]
+            return True
+
     def _worker(self):
         while True:
             job, audio_only = self.q.get()
