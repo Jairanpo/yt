@@ -243,13 +243,32 @@ resolving https://www.youtube.com/@3blue1brown/playlists …
  20   Binary, Hanoi and Sierpinski                 PLZHQObOWTQDMRtm8h9bG9P06WINNoBnCR
  21 ▤ Essence of linear algebra                    PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab
 
-track one:  yt add PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
+add which? numbers like 1,3-5 · a = all · enter = none
+add: 19,20
+
+[1/2] Essence of calculus
+added playlist Essence of calculus (3Blue1Brown) — 12 videos catalogued (12 new). Nothing downloaded yet.
+[2/2] Binary, Hanoi and Sierpinski
+added playlist Binary, Hanoi and Sierpinski (3Blue1Brown) — 3 videos catalogued (3 new). Nothing downloaded yet.
 ```
 
 Nothing is tracked until you say so — a large channel can have dozens of
-playlists, and you almost never want all of them. Copy the id of the one you
-want into `yt add`. Video counts aren't shown because counting would mean
-opening every playlist; `yt add` reports the count for the one you pick.
+playlists, and you almost never want all of them, so the prompt takes just the
+numbers you want: `19,20`, a range like `3-5`, `a` for all, or a bare Enter to
+walk away having added nothing. Video counts aren't shown in the list because
+counting would mean opening every playlist; each one reports its count as it is
+added.
+
+To skip the prompt — in a script, or when you already know the numbers — pass
+them up front:
+
+```console
+$ yt playlists @3blue1brown --add 19,20
+```
+
+`--add` also takes `all`, and `--limit N` caps how much of each playlist gets
+catalogued. Without a terminal to prompt on, `yt playlists <creator>` just
+prints the list.
 
 ---
 
@@ -423,7 +442,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt serve` | The web library. `-p PORT`, `--no-open`, `-v`. |
 | `yt sources` | List channels and playlists with on-disk counts. `--kind channel\|playlist`. |
 | `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
-| `yt playlists <@handle\|url>` | List a creator's playlists so you can pick ones to track. |
+| `yt playlists <@handle\|url>` | List a creator's playlists and pick the ones to track by number. `--add 1,3-5\|all` skips the prompt. |
 | `yt forget <source>` | Stop tracking. Downloaded files and collections stay. `-y` skips the prompt. |
 | `yt config [--init]` | Show settings, or write a config file to edit. |
 | `yt block` | How to block youtube.com without breaking downloads. |

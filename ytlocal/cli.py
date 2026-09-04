@@ -98,25 +98,33 @@ def _resolve_or_die(conn, needle, source=None, collection=None):
 
 # --- sources --------------------------------------------------------------
 
-def cmd_add(args, cfg, conn):
-    url = ytdlp.source_url(args.source)
+def add_source(cfg, conn, ref, limit=None, quiet=False):
+    """Catalog one channel or playlist. Returns its display name."""
+    url = ytdlp.source_url(ref)
     kind = ytdlp.url_kind(url)
-    if url.endswith("/playlists"):
-        # That tab lists playlists, not videos; syncing it would find nothing.
-        die(f"{args.source} is a creator's playlist index, not a single source.\n"
-            f"       browse it with:  yt playlists {args.source}")
-    out(f"resolving {C['acc']}{url}{C['r']} …")
-    meta, entries = ytdlp.sync_source(cfg, url, limit=args.limit)
+    if not quiet:
+        out(f"resolving {C['acc']}{url}{C['r']} …")
+    meta, entries = ytdlp.sync_source(cfg, url, limit=limit)
     sid = meta["source_id"]
     db.upsert_source(conn, sid, url, meta.get("kind", kind), meta.get("name"),
                      meta.get("handle"), meta.get("owner"))
-    new, total = db.upsert_videos(conn, sid, entries, prune=args.limit is None)
+    new, total = db.upsert_videos(conn, sid, entries, prune=limit is None)
     db.mark_synced(conn, sid)
     name = meta.get("name") or meta.get("handle") or sid
     label = "playlist" if kind == "playlist" else "channel"
     owner = f" {C['dim']}({meta['owner']}){C['r']}" if meta.get("owner") else ""
     out(f"{C['ok']}added{C['r']} {label} {C['b']}{name}{C['r']}{owner} — "
         f"{total} videos catalogued ({new} new). Nothing downloaded yet.")
+    return name, kind
+
+
+def cmd_add(args, cfg, conn):
+    url = ytdlp.source_url(args.source)
+    if url.endswith("/playlists"):
+        # That tab lists playlists, not videos; syncing it would find nothing.
+        die(f"{args.source} is a creator's playlist index, not a single source.\n"
+            f"       pick from it with:  yt playlists {args.source}")
+    name, kind = add_source(cfg, conn, args.source, limit=args.limit)
     if kind == "playlist":
         out(f"{C['dim']}listed in the playlist's own order; "
             f"yt list \"{name}\" to see it{C['r']}")
@@ -195,11 +203,66 @@ def cmd_playlists(args, cfg, conn):
         out(f"{C['dim']}{i:>3}{C['r']} {mark} {title:<{width}}  "
             f"{C['dim']}{pl['id']}{C['r']}")
 
-    untracked = next((pl for pl in found if pl["id"] not in tracked), None)
-    if untracked:
-        out(f"\n{C['dim']}track one:{C['r']}  yt add {untracked['id']}")
-    else:
-        out(f"\n{C['dim']}all of them are already tracked.{C['r']}")
+    picked = _pick_playlists(args, found, tracked)
+    if picked is None:
+        return
+    for i, pl in enumerate(picked, 1):
+        out(f"\n{C['dim']}[{i}/{len(picked)}]{C['r']} {pl['title']}")
+        try:
+            add_source(cfg, conn, pl["id"], limit=args.limit, quiet=True)
+        except ytdlp.YtdlpError as exc:
+            # One bad playlist should not cost the others already chosen.
+            out(f"{C['err']}skipped{C['r']} {pl['title']}: {exc}")
+    if picked:
+        out(f"\n{C['dim']}yt list \"<name>\" to see one · "
+            f"yt get --source \"<name>\" to download it{C['r']}")
+
+
+def _parse_picks(spec, count):
+    """"1,3-5" or "all" -> a sorted list of 1-based indexes. None if unusable."""
+    spec = spec.strip().lower()
+    if spec in ("a", "all", "*"):
+        return list(range(1, count + 1))
+    picks = set()
+    for chunk in spec.replace(" ", ",").split(","):
+        if not chunk:
+            continue
+        lo, _, hi = chunk.partition("-")
+        try:
+            lo, hi = int(lo), int(hi or lo)
+        except ValueError:
+            return None
+        if not 1 <= lo <= hi <= count:
+            return None
+        picks.update(range(lo, hi + 1))
+    return sorted(picks)
+
+
+def _pick_playlists(args, found, tracked):
+    """Which of the listed playlists to add: --add, or an interactive prompt."""
+    spec = getattr(args, "add", None)
+    if spec is None:
+        if not sys.stdin.isatty():
+            hint = next((pl for pl in found if pl["id"] not in tracked), None)
+            if hint:
+                eg = "1" if len(found) == 1 else "1,2"
+                out(f"\n{C['dim']}track one:{C['r']}  yt add {hint['id']}"
+                    f"   {C['dim']}·  or pick by number:  "
+                    f"yt playlists {args.creator} --add {eg}{C['r']}")
+            else:
+                out(f"\n{C['dim']}all of them are already tracked.{C['r']}")
+            return None
+        out(f"\n{C['dim']}add which? numbers like 1,3-5 · a = all · "
+            f"enter = none{C['r']}")
+        spec = input("add: ")
+    if not spec.strip():
+        out("nothing added.")
+        return None
+    picks = _parse_picks(spec, len(found))
+    if picks is None:
+        die(f"cannot read {spec.strip()!r} as playlist numbers "
+            f"(expected 1-{len(found)}, e.g. 1,3-5 or all)")
+    return [found[i - 1] for i in picks]
 
 
 def cmd_forget(args, cfg, conn):
@@ -559,7 +622,8 @@ def build_parser():
             typical flow:
               yt add @3blue1brown              track a channel (metadata only)
               yt add <playlist url>            track a playlist, curated order kept
-              yt playlists @3blue1brown        see a creator's playlists, pick one
+              yt playlists @3blue1brown        list a creator's playlists, pick
+                                               the ones you want by number
               yt list "linear algebra"         browse it in order
               yt list --sort oldest --save     remember an order for a view
               yt get "eigenvectors"            download one
@@ -591,6 +655,9 @@ def build_parser():
                                     "playlists so you can pick ones to add.")
     pl.add_argument("creator", nargs="?",
                     help="@handle or channel URL: list that creator's playlists")
+    pl.add_argument("--add", metavar="PICKS",
+                    help="add these by number without prompting: 1,3-5 or all")
+    pl.add_argument("--limit", type=int, help="only catalog the newest N per playlist")
     pl.set_defaults(fn=cmd_playlists, kind="playlist")
 
     f = sub.add_parser("forget", help="stop tracking a channel or playlist")
