@@ -189,8 +189,9 @@ Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
   reads **Watch** if the file is local and **Download** if it isn't; clicking
   the thumbnail or title does the same thing. **☆** stars, **○ / ✓** marks
   watched or not, **⊘** hides it, **✕** deletes the file (with a confirm) and
-  keeps the catalog entry. A watched card dims its thumbnail and flags itself
-  *watched*.
+  keeps the catalog entry. **♪**, on anything not yet downloaded, fetches the
+  audio alone. A watched card dims its thumbnail and flags itself *watched*; an
+  audio-only one flags itself *audio ♪*.
 - **Downloads** run in the background — queue as many as you like and progress
   cards appear bottom-right. Each has its own **✕**; a download that finished
   cleanly clears itself after a few seconds, failures wait until you have read

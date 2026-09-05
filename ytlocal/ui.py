@@ -287,7 +287,7 @@ function card(v, seq) {
     <div class="thumbwrap">
       <img loading="lazy" src="/thumb/${v.id}" alt="">
       ${seq ? `<span class="seq">${seq}</span>` : ''}
-      ${v.have ? `<span class="flag have" style="${seq ? 'left:auto;right:6px' : ''}">on disk</span>` : ''}
+      ${v.have ? `<span class="flag have" style="${seq ? 'left:auto;right:6px' : ''}">${v.audio ? "audio ♪" : "on disk"}</span>` : ''}
       ${v.starred ? '<span class="flag" style="left:auto;right:6px;top:6px">★</span>' : ''}
       ${v.duration ? `<span class="badge">${fmtDur(v.duration)}</span>` : ''}
       <span class="flag seen" style="${v.duration ? 'bottom:26px' : ''}"
@@ -313,6 +313,15 @@ function card(v, seq) {
   main.onclick = () => v.have ? open_(v) : grab(v, main);
   main.disabled = v.unavailable && !v.have;
   row.appendChild(main);
+
+  if (!v.have && !v.unavailable) {
+    const aud = document.createElement("button");
+    aud.className = "act icon";
+    aud.textContent = "♪";
+    aud.title = "Download the audio only (m4a) — a fraction of the size";
+    aud.onclick = () => grab(v, aud, true);
+    row.appendChild(aud);
+  }
 
   const hide = document.createElement("button");
   hide.className = "act icon";
@@ -375,11 +384,12 @@ function card(v, seq) {
   return el;
 }
 
-async function grab(v, btn) {
+async function grab(v, btn, audio) {
+  const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Queued…";
   dismissed.delete(v.id);
-  try { await post(`/api/get/${v.id}`); pollJobs(); }
-  catch (e) { btn.disabled = false; btn.textContent = "Retry"; alert(e.message); }
+  try { await post(`/api/get/${v.id}`, {audio: !!audio}); pollJobs(); }
+  catch (e) { btn.disabled = false; btn.textContent = label; alert(e.message); }
 }
 
 /* ---- player ---- */

@@ -15,6 +15,10 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 CHUNK = 256 * 1024
 
 
+# What an audio-only fetch leaves on disk, so a card can say so.
+AUDIO_EXTS = (".m4a", ".mp3", ".opus", ".ogg", ".aac", ".flac", ".wav")
+
+
 def row_to_json(r) -> dict:
     return {
         "id": r["id"],
@@ -25,6 +29,7 @@ def row_to_json(r) -> dict:
         "duration": r["duration"],
         "description": (r["description"] or "")[:4000],
         "have": r["downloaded_path"] is not None,
+        "audio": (r["downloaded_path"] or "").endswith(AUDIO_EXTS),
         "size": r["filesize"],
         "starred": bool(r["starred"]),
         "watched": bool(r["watched"]),
