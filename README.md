@@ -185,6 +185,11 @@ Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
   a new one on the spot.
 - **Four chips** — Downloaded, Starred, Unwatched, Hidden — combine with the
   search.
+- **The view lives in the address bar.** Whatever you are looking at — a
+  playlist, a search, the chips you have on — is in the URL, so a refresh puts
+  you back where you were instead of on Everything, the back button walks
+  through the playlists you visited, and a view worth returning to can just be
+  bookmarked.
 - **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
   reads **Watch** if the file is local and **Download** if it isn't; clicking
   the thumbnail or title does the same thing. **☆** stars, **○ / ✓** marks

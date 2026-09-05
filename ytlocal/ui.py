@@ -203,8 +203,15 @@ function params() {
 }
 
 let pickerKey = "";
-async function refresh() {
-  const d = await api("/api/state?" + params());
+async function refresh(opts) {
+  const qs = params();
+  // The view lives in the address bar, so a refresh (or a bookmark) lands you
+  // where you were rather than back on Everything. Picking a source is a
+  // navigation and gets its own history entry; typing in the search box or
+  // flipping a chip only rewrites the current one.
+  const step = opts && opts.push ? "pushState" : "replaceState";
+  history[step](null, "", qs ? "?" + qs : location.pathname);
+  const d = await api("/api/state?" + qs);
   state.videos = d.videos;
   state.ordered = d.ordered;
   state.collections = d.collections;
@@ -221,29 +228,44 @@ async function refresh() {
 }
 
 function buildPicker(sources, colls) {
-  // Rebuild only when the set actually changes, so the open dropdown and the
-  // current selection survive the 1.2s job-polling refreshes.
+  const sel = $("#src");
+  const want = state.source ? "s:" + state.source
+             : state.collection ? "c:" + state.collection : "";
+  // Rebuild the options only when the set actually changes, so an open
+  // dropdown survives the 1.2s job-polling refreshes.
   const key = JSON.stringify([sources.map(s => [s.id, s.have, s.total]),
                               colls.map(c => [c.id, c.have, c.total])]);
-  if (key === pickerKey) return;
-  pickerKey = key;
-  const sel = $("#src"), keep = sel.value;
-  sel.innerHTML = '<option value="">Everything</option>';
-  const group = (label, items, prefix) => {
-    if (!items.length) return;
-    const g = document.createElement("optgroup"); g.label = label;
-    for (const it of items) {
-      const o = document.createElement("option");
-      o.value = prefix + it.id;
-      o.textContent = `${it.name} (${it.have}/${it.total})`;
-      g.appendChild(o);
+  if (key !== pickerKey) {
+    pickerKey = key;
+    sel.innerHTML = '<option value="">Everything</option>';
+    const group = (label, items, prefix) => {
+      if (!items.length) return;
+      const g = document.createElement("optgroup"); g.label = label;
+      for (const it of items) {
+        const o = document.createElement("option");
+        o.value = prefix + it.id;
+        o.textContent = `${it.name} (${it.have}/${it.total})`;
+        g.appendChild(o);
+      }
+      sel.appendChild(g);
+    };
+    group("Channels",  sources.filter(s => s.kind === "channel"),  "s:");
+    group("Playlists", sources.filter(s => s.kind === "playlist"), "s:");
+    group("Collections", colls, "c:");
+  }
+  // The picker always shows the view you are in, however you got here -- a
+  // restored URL and the back button both move the state, not the dropdown.
+  if (sel.value !== want) {
+    sel.value = want;
+    if (want && sel.value !== want) {
+      // A URL naming a source that has since been forgotten. Assigning a value
+      // no option carries leaves the select on nothing at all, so put it back
+      // on Everything by hand.
+      sel.selectedIndex = 0;
+      state.source = state.collection = "";
+      refresh();
     }
-    sel.appendChild(g);
-  };
-  group("Channels",  sources.filter(s => s.kind === "channel"),  "s:");
-  group("Playlists", sources.filter(s => s.kind === "playlist"), "s:");
-  group("Collections", colls, "c:");
-  sel.value = keep;
+  }
 }
 
 function buildSorts(sorts, current) {
@@ -598,7 +620,7 @@ $("#src").addEventListener("change", e => {
   const v = e.target.value;
   state.source     = v.startsWith("s:") ? v.slice(2) : "";
   state.collection = v.startsWith("c:") ? v.slice(2) : "";
-  refresh();
+  refresh({push: true});
 });
 $("#sort").addEventListener("change", async e => {
   // Persisted against the view you were looking at when you chose it.
@@ -617,6 +639,26 @@ function toggle(id, key) {
 }
 toggle("#f-have", "have"); toggle("#f-starred", "starred"); toggle("#f-unwatched", "unwatched");
 toggle("#f-hidden", "hidden");
+
+function restoreFromUrl() {
+  const p = new URLSearchParams(location.search);
+  state.q = p.get("q") || "";
+  state.source = p.get("source") || "";
+  state.collection = p.get("collection") || "";
+  state.have = p.has("have") ? p.get("have") === "1" : null;
+  state.starred = p.get("starred") === "1";
+  state.unwatched = p.get("unwatched") === "1";
+  state.hidden = p.get("hidden") === "1";
+  $("#q").value = state.q;
+  $("#f-have").setAttribute("aria-pressed", String(state.have === true));
+  for (const [id, on] of [["#f-starred", state.starred],
+                          ["#f-unwatched", state.unwatched],
+                          ["#f-hidden", state.hidden]])
+    $(id).setAttribute("aria-pressed", String(on));
+}
+restoreFromUrl();
+// Back and forward move between views rather than out of the library.
+addEventListener("popstate", () => { restoreFromUrl(); refresh(); });
 
 refresh();
 </script>
