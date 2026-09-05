@@ -114,7 +114,7 @@ def add_source(cfg, conn, ref, limit=None, quiet=False):
     sid = meta["source_id"]
     db.upsert_source(conn, sid, url, meta.get("kind", kind), meta.get("name"),
                      meta.get("handle"), meta.get("owner"))
-    new, total = db.upsert_videos(conn, sid, entries, prune=limit is None)
+    new, total, _ = db.upsert_videos(conn, sid, entries, prune=limit is None)
     db.mark_synced(conn, sid)
     name = meta.get("name") or meta.get("handle") or sid
     label = "playlist" if kind == "playlist" else "channel"
@@ -160,8 +160,8 @@ def cmd_sync(args, cfg, conn):
         db.upsert_source(conn, src["id"], src["url"], src["kind"], meta.get("name"),
                          meta.get("handle"), meta.get("owner"))
         # Pruning drops videos removed from a playlist; only valid on a full pass.
-        new, total = db.upsert_videos(conn, src["id"], entries,
-                                      prune=args.limit is None)
+        new, total, _dropped = db.upsert_videos(conn, src["id"], entries,
+                                                prune=args.limit is None)
         db.mark_synced(conn, src["id"])
         grand_new += new
         tag = "▤" if src["kind"] == "playlist" else "▸"
@@ -175,6 +175,71 @@ def cmd_sync(args, cfg, conn):
     if grand_gone:
         out(f"{C['dim']}{grand_gone} entries are private or deleted "
             f"(yt list --hidden){C['r']}")
+    # Naming one source scopes the clean-up to what that source let go of.
+    _report_orphans(args, conn, targets[0]["id"] if args.source else None)
+
+
+def _quoted(name):
+    return f'"{name}" ' if name else ""
+
+
+def _report_orphans(args, conn, scope):
+    """Videos nothing lists any more: what a sync leaves behind.
+
+    Syncing one source answers for that source alone -- the videos it was the
+    last to hold. A full sync is the one that sweeps the whole catalog.
+    """
+    left = db.orphans(conn, source=scope)
+    elsewhere = len(db.orphans(conn)) - len(left) if scope else 0
+    if not left:
+        if elsewhere and not args.tidy:
+            out(f"\n{C['dim']}{elsewhere} video(s) elsewhere are in no source "
+                f"any more — yt sync --tidy sweeps the lot{C['r']}")
+        return
+    on_disk = [v for v in left if v["downloaded_path"]]
+    if not args.tidy:
+        out(f"\n{C['dim']}{len(left)} video(s) are in no source any more"
+            + (f", {len(on_disk)} still on disk" if on_disk else "")
+            + f" — yt sync {_quoted(args.source)}--tidy to clear them out{C['r']}")
+        return
+
+    # Anything you starred or filed away was kept on purpose, so it survives
+    # its source; say so rather than deciding for you.
+    kept_ids = {v["id"] for v in left
+                if v["starred"] or db.in_collection(conn, v["id"])}
+    keep = [v for v in left if v["id"] in kept_ids]
+    drop = [v for v in left if v["id"] not in kept_ids]
+    if not drop:
+        out(f"\n{C['dim']}{len(keep)} orphan(s), all starred or in a collection "
+            f"— keeping them.{C['r']}")
+        return
+
+    out(f"\n{C['b']}{len(drop)}{C['r']} video(s) left every playlist and channel "
+        f"you track:")
+    if elsewhere:
+        out(f"{C['dim']}({elsewhere} more elsewhere in the catalog, left alone "
+            f"— sync everything to sweep those too){C['r']}")
+    for v in drop:
+        size = f"  {human_size(v['filesize'])}" if v["downloaded_path"] else ""
+        out("  " + fmt_row(v) + size)
+    freed = sum(v["filesize"] or 0 for v in drop if v["downloaded_path"])
+    out(f"{C['dim']}deleting their files ({human_size(freed) if freed else 'none'} "
+        f"on disk) and catalog entries{C['r']}")
+    if keep:
+        out(f"{C['dim']}{len(keep)} more kept: starred or in a collection{C['r']}")
+    if not args.yes and input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+        out("cancelled — nothing deleted.")
+        return
+    files = 0
+    for v in drop:
+        if v["downloaded_path"]:
+            path = Path(v["downloaded_path"])
+            for _lang, sub in ytdlp.sidecar_subs(path):
+                sub.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+            files += 1
+        db.delete_video(conn, v["id"])
+    out(f"{C['ok']}tidied{C['r']} — {len(drop)} catalog entries and {files} file(s) gone")
 
 
 def cmd_sources(args, cfg, conn):
@@ -731,6 +796,10 @@ def build_parser():
     s.add_argument("source", nargs="?", help="one source; default is all")
     s.add_argument("--limit", type=int, help="only check the newest N per source")
     s.add_argument("--show-new", action="store_true", help="print new entries")
+    s.add_argument("--tidy", action="store_true",
+                   help="delete videos that left every source, files and all")
+    s.add_argument("-y", "--yes", action="store_true",
+                   help="skip the confirmation --tidy asks for")
     s.set_defaults(fn=cmd_sync)
 
     src = sub.add_parser("sources", help="list tracked channels and playlists")

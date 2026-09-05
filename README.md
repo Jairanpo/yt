@@ -426,6 +426,52 @@ intended; metadata is nearly free. A full sync also drops videos that were
 removed from a playlist upstream; a `--limit` run never prunes, since it hasn't
 seen the tail.
 
+### When something is dropped from a playlist
+
+Losing its place in a playlist takes a video out of that view, but the catalog
+entry and any file you downloaded stay — a video can sit in several playlists
+and a channel at once, and being dropped from one says nothing about the rest.
+A sync tells you when something has run out of homes entirely:
+
+```console
+$ yt sync
+2 video(s) are in no source any more, 1 still on disk — yt sync --tidy to clear them out
+```
+
+`--tidy` clears them out, files and all. It shows exactly what is about to go
+and asks first:
+
+```console
+$ yt sync --tidy
+1 video(s) left every playlist and channel you track:
+  ●  yxsFCbLRIyY  2026-08-14   9:44  JLPT N5 Listening Practice 🇯🇵 Wedding Party…  9.4MB
+deleting their files (9.4MB on disk) and catalog entries
+1 more kept: starred or in a collection
+proceed? [y/N] y
+tidied — 1 catalog entries and 1 file(s) gone
+```
+
+Anything you starred or filed into a collection is kept and reported, since you
+put it there on purpose. `-y` skips the prompt for cron. Nothing is deleted
+without `--tidy`, and a source that failed to sync never counts against you —
+its videos keep their home, so a network blip can never make the whole thing
+look orphaned.
+
+**One playlist at a time.** Name a source and the clean-up answers for that
+source alone — the videos it was the last to hold:
+
+```console
+$ yt sync "Fake Mix" --tidy
+1 video(s) left every playlist and channel you track:
+(1 more elsewhere in the catalog, left alone — sync everything to sweep those too)
+  ○  bbbbbbbbbb2   1:01  Track 2
+```
+
+That holds even when an earlier plain sync did the pruning, since a video
+remembers which source last let it go. A video still carried by another
+playlist or a channel you track is never touched, however you scope the run:
+it has not left your library, only that one playlist.
+
 Nightly, via cron:
 
 ```cron
@@ -478,7 +524,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | Command | What it does |
 | --- | --- |
 | `yt add <@handle\|url\|PL…>` | Track a channel or playlist and catalog it. `--limit N` for just the newest N. |
-| `yt sync [source]` | Refresh catalogs; never downloads. `--show-new`, `--limit N`. |
+| `yt sync [source]` | Refresh catalogs; never downloads on its own. `--show-new`, `--limit N`, `--tidy [-y]` to delete videos that left every source, files included. |
 | `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--hidden`, `--sort KEY [--save]`. |
 | `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--source X`, `-c COLLECTION`, `--audio`. |
 | `yt collect …` | Your own collections — see [Collections](#collections). |

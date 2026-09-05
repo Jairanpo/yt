@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS videos (
     -- title, so there is nothing to show and nothing to fetch. Maintained by
     -- sync, and cleared again if the video ever comes back.
     unavailable     INTEGER NOT NULL DEFAULT 0,
+    -- The source a sync last took this video out of. Once the membership row
+    -- is gone that is the only record of where it used to live, and it is what
+    -- lets `yt sync <playlist> --tidy` answer for that playlist alone.
+    left_source     TEXT,
     -- 0 visible · 1 hidden by you · 2 hidden by sync for being unavailable.
     -- Keeping those apart is what lets sync tidy up after itself without ever
     -- overruling a call you made by hand.
@@ -190,6 +194,8 @@ def _add_missing_columns(conn) -> None:
         if col not in have:
             conn.execute(
                 f"ALTER TABLE videos ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
+    if "left_source" not in have:
+        conn.execute("ALTER TABLE videos ADD COLUMN left_source TEXT")
     if "unavailable" not in have:
         # A pre-existing catalog stored these with the id standing in for the
         # missing title. Name them for what they are on the way through, and
@@ -297,7 +303,12 @@ def delete_source(conn, sid: str) -> None:
 # --- videos ---------------------------------------------------------------
 
 def upsert_videos(conn, sid: str, entries: list, prune=False) -> tuple:
-    """Returns (n_new, n_seen). n_new counts videos new *to this source*."""
+    """Returns (n_new, n_seen, dropped).
+
+    n_new counts videos new *to this source*; dropped are the ids that used to
+    be in it and are not any more, which is how a caller knows what a sync
+    took away.
+    """
     known = {r[0] for r in conn.execute(
         "SELECT video_id FROM source_videos WHERE source_id = ?", (sid,))}
     seen = set()
@@ -314,6 +325,7 @@ def upsert_videos(conn, sid: str, entries: list, prune=False) -> tuple:
                ON CONFLICT(id) DO UPDATE SET
                    title       = excluded.title,
                    unavailable = excluded.unavailable,
+                   left_source = NULL,
                    -- Auto-hide one that has just gone dark, un-hide one that
                    -- has come back, and never touch a choice you made yourself.
                    hidden      = CASE
@@ -340,6 +352,7 @@ def upsert_videos(conn, sid: str, entries: list, prune=False) -> tuple:
                VALUES (?, ?, ?)
                ON CONFLICT(source_id, video_id) DO UPDATE SET position = excluded.position""",
             (sid, vid, e["position"]))
+    stale = set()
     if prune:
         # Only safe on a full sync; a --limit run has not seen the tail.
         stale = known - seen
@@ -347,8 +360,10 @@ def upsert_videos(conn, sid: str, entries: list, prune=False) -> tuple:
             conn.execute(
                 "DELETE FROM source_videos WHERE source_id = ? AND video_id = ?",
                 (sid, vid))
+            conn.execute("UPDATE videos SET left_source = ? WHERE id = ?",
+                         (sid, vid))
     conn.commit()
-    return new, len(entries)
+    return new, len(entries), stale
 
 
 _SEL = """SELECT v.*,
@@ -625,6 +640,34 @@ def stats(conn) -> dict:
         "SELECT COUNT(*) FROM sources WHERE kind = 'playlist'").fetchone()[0]
     d["collections"] = conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
     return d
+
+
+def orphans(conn, source=None) -> list:
+    """Videos that belong to no tracked source any more.
+
+    A video dropped from one playlist but still carried by a channel you
+    follow is not an orphan -- it only counts once nothing lists it. Passing a
+    source narrows that to the ones it was the last to hold.
+    """
+    sql = _SEL + " WHERE v.id NOT IN (SELECT video_id FROM source_videos)"
+    args = []
+    if source:
+        sql += " AND v.left_source = ?"
+        args.append(source)
+    sql += " ORDER BY v.downloaded_path IS NULL, v.title COLLATE NOCASE"
+    return conn.execute(sql, args).fetchall()
+
+
+def in_collection(conn, vid: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM collection_items WHERE video_id = ? LIMIT 1", (vid,)
+    ).fetchone() is not None
+
+
+def delete_video(conn, vid: str) -> None:
+    """Drop the catalog entry entirely. The file is the caller's business."""
+    conn.execute("DELETE FROM videos WHERE id = ?", (vid,))
+    conn.commit()
 
 
 def prune_missing(conn) -> int:
