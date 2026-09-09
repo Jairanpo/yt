@@ -89,7 +89,7 @@ $ yt get "hairy ball"
 
 ```bash
 yt watch "hairy ball"    # opens mpv/vlc; downloads first if not on disk yet
-yt serve                 # web library at http://127.0.0.1:8420
+yt serve                 # web library at http://127.0.0.1:8420, in the background
 ```
 
 ---
@@ -167,12 +167,42 @@ Add `-y` to skip the prompt.
 ## The web library
 
 ```bash
-yt serve                 # opens your browser at http://127.0.0.1:8420
+yt serve                 # a switch: starts it, or stops it if already up
 yt serve -p 9000         # different port
 yt serve --no-open       # don't launch a browser
+yt serve --status        # running? on what port? starting at login?
 ```
 
-Bound to loopback, so nothing else on your network can reach it. Ctrl-C stops.
+`yt serve` runs the library in the background and hands your terminal back.
+Typing it again turns the library off — the same command both ways. Only one
+server ever runs, no matter how many terminals you type it in; a second one
+refuses to start rather than fighting over the port.
+
+Bound to loopback, so nothing else on your network can reach it.
+
+### Starting it at login
+
+```bash
+yt serve --install       # write and enable a systemd user unit, then start it
+yt serve --uninstall     # stop doing that
+```
+
+`--install` writes `~/.config/systemd/user/ytlocal.service`, so the library
+comes up on every login and comes back if it ever crashes. `yt serve` still
+toggles it on and off by hand, and a toggle-off stays off until you toggle it
+back on or log in again. Logs go to `journalctl --user -u ytlocal`.
+
+Two things to know. The unit points at the interpreter and checkout you ran
+`--install` from, so re-run it if you move the repo. And `yt serve --stop` is
+the non-toggling form, for scripts and keybindings where guessing the current
+state would be wrong.
+
+### How the singleton holds
+
+The server takes an exclusive `flock` on `$XDG_RUNTIME_DIR/ytlocal/serve.lock`
+and holds it for its lifetime. The kernel drops that lock however the process
+dies — clean exit, crash, `kill -9` — so there is no stale pidfile to clean up
+and `yt serve --status` never lies about a server that isn't there.
 
 - **Search box** filters titles and descriptions as you type. The dropdown
   groups everything you can narrow to: **Channels**, **Playlists**, and your
@@ -540,7 +570,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt rm <id\|phrase>` | Delete the file, keep the catalog entry. `-y` skips the prompt. |
 | `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |
 | `yt status` | Counts and disk use; also reconciles the catalog with what's on disk. |
-| `yt serve` | The web library. `-p PORT`, `--no-open`, `-v`. |
+| `yt serve` | Toggle the web library on or off, in the background. `--status`, `--stop`, `--foreground`, `--install` / `--uninstall` (start at login), `-p PORT`, `--no-open`, `-v`. |
 | `yt sources` | List channels and playlists with on-disk counts. `--kind channel\|playlist`. |
 | `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
 | `yt playlists <@handle\|url>` | List a creator's playlists and pick the ones to track by number. `--add 1,3-5\|all` skips the prompt. |
@@ -591,7 +621,7 @@ cookies via `ytdlp_args`: `["--cookies-from-browser","firefox"]`.
 **Files deleted outside the tool.** Run `yt status` — it reconciles the catalog
 with what's actually on disk and reports how many entries it cleared.
 
-**Port already in use.** `yt serve -p 9001`, or set `port` in the config.
+**Port already in use.** `yt serve -p 9001`, or set `port` in the config. If it says the library is *already up*, that's the singleton: `yt serve --status` will tell you where.
 
 **Video won't play in the browser.** Rare, but a source with no mp4 variant can
 end up in a codec Firefox won't decode. `yt watch <id>` plays it in mpv

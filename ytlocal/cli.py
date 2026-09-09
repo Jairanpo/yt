@@ -2,6 +2,7 @@
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import textwrap
@@ -711,23 +712,134 @@ def cmd_collect(args, cfg, conn):
 
 # --- serving --------------------------------------------------------------
 
+def _url(port):
+    return f"http://127.0.0.1:{port}"
+
+
 def cmd_serve(args, cfg, conn):
-    from ytlocal import server
+    from ytlocal import service
     conn.close()
-    httpd = server.serve(cfg, args.port, verbose=args.verbose)
-    url = f"http://127.0.0.1:{httpd.server_address[1]}"
-    out(f"{C['acc']}▶{C['r']} library at {C['b']}{url}{C['r']}  "
+    try:
+        if args.foreground:
+            _serve_foreground(args, cfg)
+        elif args.install:
+            _serve_install(args, cfg)
+        elif args.uninstall:
+            _serve_uninstall()
+        elif args.status:
+            _serve_status(cfg)
+        elif args.stop:
+            _serve_stop()
+        else:
+            _serve_toggle(args, cfg)
+    except service.ServiceError as exc:
+        die(str(exc))
+
+
+def _serve_foreground(args, cfg):
+    """The server proper. Also what the systemd unit runs."""
+    from ytlocal import server, service
+    port = int(args.port or cfg["port"])
+    try:
+        httpd = server.serve(cfg, port, verbose=args.verbose)
+    except OSError as exc:
+        # Almost always the singleton bumping into itself; say so plainly
+        # before blaming the port.
+        st = service.running()
+        if st:
+            die(f"the library is already up"
+                f"{' at ' + _url(st['port']) if st.get('port') else ''}"
+                f" — only one runs at a time. Stop it with  yt serve --stop")
+        die(f"cannot listen on port {port}: {exc.strerror or exc}. "
+            f"Try  yt serve -p {port + 1}  or set a port in the config.")
+    port = httpd.server_address[1]
+    # Claim after binding, so the lock records the port we actually got and a
+    # loser of the race hasn't already stomped the file.
+    if not service.claim(port):
+        httpd.server_close()
+        st = service.running() or {}
+        die(f"another server already holds the library"
+            f"{' at ' + _url(st['port']) if st.get('port') else ''}"
+            f" — only one runs at a time. Stop it with  yt serve --stop")
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+    out(f"{C['acc']}▶{C['r']} library at {C['b']}{_url(port)}{C['r']}  "
         f"{C['dim']}(ctrl-c to stop){C['r']}")
     out(f"{C['dim']}bound to loopback only — nothing else on your network "
         f"can reach it{C['r']}")
     if not args.no_open:
-        webbrowser.open(url)
+        webbrowser.open(_url(port))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         out("\nstopped.")
     finally:
         httpd.server_close()
+
+
+def _raise_interrupt(signum, frame):
+    """SIGTERM joins ctrl-c's path out. Calling shutdown() here would deadlock."""
+    raise KeyboardInterrupt
+
+
+def _serve_toggle(args, cfg):
+    """A bare `yt serve` is a switch: up if it was down, down if it was up."""
+    from ytlocal import service
+    if service.running():
+        _serve_stop()
+        return
+    st = service.start(port=args.port, verbose=args.verbose)
+    url = _url(st.get("port") or args.port or cfg["port"])
+    out(f"{C['acc']}▶{C['r']} library at {C['b']}{url}{C['r']}  "
+        f"{C['dim']}(running in the background — yt serve again to stop){C['r']}")
+    if not args.no_open:
+        webbrowser.open(url)
+
+
+def _serve_stop():
+    from ytlocal import service
+    if service.stop():
+        out(f"{C['dim']}■ stopped.{C['r']}")
+    else:
+        out(f"{C['dim']}nothing was running.{C['r']}")
+
+
+def _serve_status(cfg):
+    from ytlocal import service
+    st = service.running()
+    if st:
+        out(f"{C['ok']}●{C['r']} running at {C['b']}{_url(st.get('port') or cfg['port'])}{C['r']}"
+            f"{C['dim']}  pid {st.get('pid', '?')}{C['r']}")
+    else:
+        out(f"{C['dim']}○ not running{C['r']}")
+    if not service.installed():
+        out(f"{C['dim']}  not set to start at login — yt serve --install{C['r']}")
+    elif service.enabled():
+        out(f"{C['dim']}  starts at login ({service.unit_path()}){C['r']}")
+    else:
+        out(f"{C['dim']}  unit installed but disabled ({service.unit_path()}){C['r']}")
+
+
+def _serve_install(args, cfg):
+    from ytlocal import service
+    path = service.install(port=args.port)
+    out(f"{C['ok']}✓{C['r']} wrote {path} and enabled it — the library will be "
+        f"up after every login.")
+    if service.running():
+        out(f"{C['dim']}already running; it will pick the unit up on next start."
+            f"{C['r']}")
+        return
+    st = service.start(port=args.port, verbose=args.verbose)
+    out(f"{C['acc']}▶{C['r']} library at "
+        f"{C['b']}{_url(st.get('port') or args.port or cfg['port'])}{C['r']}")
+
+
+def _serve_uninstall():
+    from ytlocal import service
+    if service.uninstall():
+        out(f"{C['dim']}removed the login unit. The server keeps running until "
+            f"you stop it.{C['r']}")
+    else:
+        out(f"{C['dim']}no login unit installed.{C['r']}")
 
 
 def cmd_config(args, cfg, conn):
@@ -905,10 +1017,25 @@ def build_parser():
 
     sub.add_parser("status", help="library summary").set_defaults(fn=cmd_status)
 
-    sv = sub.add_parser("serve", help="start the local web library")
+    sv = sub.add_parser("serve", help="toggle the local web library on or off",
+                        description="With no flags this is a switch: it starts "
+                                    "the library in the background if it is "
+                                    "down, and stops it if it is up. Only one "
+                                    "server ever runs at a time.")
     sv.add_argument("-p", "--port", type=int)
     sv.add_argument("--no-open", action="store_true", help="do not launch a browser")
     sv.add_argument("-v", "--verbose", action="store_true")
+    mode = sv.add_mutually_exclusive_group()
+    mode.add_argument("-f", "--foreground", action="store_true",
+                      help="run here in this terminal instead of in the background")
+    mode.add_argument("--stop", action="store_true",
+                      help="stop it, without the toggle's guesswork")
+    mode.add_argument("--status", action="store_true",
+                      help="is it running, and does it start at login?")
+    mode.add_argument("--install", action="store_true",
+                      help="start the library at every login (systemd user unit)")
+    mode.add_argument("--uninstall", action="store_true",
+                      help="undo --install")
     sv.set_defaults(fn=cmd_serve)
 
     c = sub.add_parser("config", help="show or create the config file")
