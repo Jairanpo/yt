@@ -205,12 +205,26 @@ dies — clean exit, crash, `kill -9` — so there is no stale pidfile to clean 
 and `yt serve --status` never lies about a server that isn't there.
 
 - **Search box** filters titles and descriptions as you type. The dropdown
-  groups everything you can narrow to: **Channels**, **Playlists**, and your
-  **Collections**. Picking a playlist or collection switches the grid into that
-  list's own order and numbers each card.
+  groups everything you can narrow to: **Channels**, then **Playlists · <the
+  creator>** — one group per creator, because playlist titles like "Lesson 1"
+  or "JLPT N5" repeat across channels — and your **Collections**. Whichever
+  view you are in, the creator stays on show next to the picker, since a
+  collapsed dropdown shows the title alone. Picking a playlist or collection
+  switches the grid into that list's own order and numbers each card.
 - **Sort dropdown** reorders the grid — newest, oldest, recently added, title,
   longest, shortest. Your choice is remembered for that view and shared with
   the CLI; see [Sorting](#sorting).
+- **＋ source** tracks a new channel or playlist without leaving the page:
+  paste an `@handle`, a channel URL, or a playlist URL or `PL…` id. It
+  catalogues in the background — titles only, nothing downloads — reports
+  itself in the same cards a download uses, and drops you into the new view
+  when it lands. YouTube links only.
+  - **Browse →** in the same sheet does what
+    [`yt playlists <creator>`](#finding-a-creators-playlists) does in the
+    terminal: give it a creator and it lists every playlist they have, marks
+    the ones you already track, and tracks the ones you tick. **all** / **none**
+    for the whole list. Picks are catalogued one at a time, each with its own
+    card; tick exactly one and the page lands in it when it finishes.
 - **＋ collection** on any card adds it to one of your collections, or creates
   a new one on the spot.
 - **Four chips** — Downloaded, Starred, Unwatched, Hidden — combine with the
@@ -264,13 +278,22 @@ can belong to both without being duplicated:
 
 ```console
 $ yt sources
-▸ channel  3Blue1Brown                           1/151   on disk  @3blue1brown
-▤ playlist Essence of linear algebra             1/16    on disk  3Blue1Brown
+▸ channel 3Blue1Brown                            1/151   on disk  @3blue1brown
+
+▤ playlists · 3Blue1Brown  @3blue1brown
+    Essence of linear algebra                    1/16    on disk
+    Essence of calculus                          0/12    on disk
 ```
 
-`yt channels` and `yt playlists` narrow that list to one kind.
+Channels come first, then playlists filed under the creator who made them —
+two channels can easily both have a "Chapter 1" or a "Tutorials", and the
+heading is what tells them apart. `yt channels` and `yt playlists` narrow that
+list to one kind.
 
 ### Finding a creator's playlists
+
+*In the web library this is **＋ source → Browse**; the terminal version is
+below.*
 
 You rarely know a playlist's URL by heart. Give `yt playlists` a channel and it
 lists what that creator has published, marking the ones you already track:
@@ -571,7 +594,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |
 | `yt status` | Counts and disk use; also reconciles the catalog with what's on disk. |
 | `yt serve` | Toggle the web library on or off, in the background. `--status`, `--stop`, `--foreground`, `--install` / `--uninstall` (start at login), `-p PORT`, `--no-open`, `-v`. |
-| `yt sources` | List channels and playlists with on-disk counts. `--kind channel\|playlist`. |
+| `yt sources` | List channels, then playlists grouped by the creator who owns them, with on-disk counts. `--kind channel\|playlist`. |
 | `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
 | `yt playlists <@handle\|url>` | List a creator's playlists and pick the ones to track by number. `--add 1,3-5\|all` skips the prompt. |
 | `yt forget <source>` | Stop tracking. Downloaded files and collections stay. `-y` skips the prompt. |

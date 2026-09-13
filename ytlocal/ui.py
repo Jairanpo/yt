@@ -33,6 +33,11 @@ PAGE = r"""<!doctype html>
           border-radius:999px; padding:5px 12px; font-size:13px; cursor:pointer; }
   .chip[aria-pressed=true] { background:var(--accent); border-color:var(--accent);
                              color:#fff; }
+  /* Who the current view belongs to. A collapsed <select> shows only the
+     option's own text, so the optgroup that carries the creator goes out of
+     sight the moment you pick a playlist -- this keeps it on screen. */
+  .who-src { color:var(--dim); font-size:12.5px; max-width:32ch;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .stats { color:var(--dim); font-size:13px; margin-left:auto; }
   main { padding:20px; }
   .grid { display:grid; gap:18px;
@@ -95,21 +100,43 @@ PAGE = r"""<!doctype html>
   .seq { position:absolute; left:6px; top:6px; background:var(--accent);
          color:#fff; font-size:11px; font-weight:600; padding:2px 7px;
          border-radius:4px; font-variant-numeric:tabular-nums; }
-  #modal { position:fixed; inset:0; background:rgba(8,8,10,.6); z-index:60;
+  /* One overlay style, two sheets: add to a collection, and track a source. */
+  .sheet { position:fixed; inset:0; background:rgba(8,8,10,.6); z-index:60;
            display:none; align-items:center; justify-content:center; }
-  #modal.on { display:flex; }
-  #modal .box { background:var(--panel); border:1px solid var(--edge);
-                border-radius:10px; padding:18px; width:min(380px,92vw);
+  .sheet.on { display:flex; }
+  .sheet .box { background:var(--panel); border:1px solid var(--edge);
+                border-radius:10px; padding:18px; width:min(440px,92vw);
                 box-shadow:0 8px 30px rgba(0,0,0,.3); }
-  #modal h3 { margin:0 0 4px; font-size:15px; }
-  #modal .who { color:var(--dim); font-size:12.5px; margin-bottom:12px;
+  .sheet h3 { margin:0 0 4px; font-size:15px; }
+  .sheet .who { color:var(--dim); font-size:12.5px; margin-bottom:12px;
                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #modal label { display:flex; gap:9px; align-items:center; padding:6px 2px;
+  /* The add-a-source hint is a sentence, not a title: let it wrap. */
+  .sheet .hint { color:var(--dim); font-size:12.5px; white-space:normal; }
+  .sheet .err { color:#d4705c; font-size:12.5px; margin-top:10px; }
+  .sheet label { display:flex; gap:9px; align-items:center; padding:6px 2px;
                  font-size:14px; cursor:pointer; }
-  #modal .mk { display:flex; gap:6px; margin-top:12px; }
-  #modal .mk input { flex:1; background:var(--bg); color:var(--ink);
+  .sheet .mk { display:flex; gap:6px; margin-top:12px; }
+  .sheet .mk input { flex:1; background:var(--bg); color:var(--ink);
                      border:1px solid var(--edge); border-radius:6px;
                      padding:6px 9px; font:inherit; font-size:13.5px; }
+  /* A creator's playlist index runs to dozens; it scrolls inside the sheet
+     rather than pushing the buttons off the bottom of the screen. */
+  .sheet .picks { max-height:min(46vh,340px); overflow-y:auto; margin-top:10px;
+                  border-top:1px solid var(--edge); border-bottom:1px solid var(--edge);
+                  padding:4px 0; }
+  .sheet .picks label { padding:5px 2px; font-size:13.5px; align-items:start; }
+  /* min-width:0 so a long course title wraps inside the row instead of
+     stretching it past the sheet. */
+  .sheet .picks label span { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .sheet .picks input { margin-top:3px; }
+  .sheet .picks .tag { color:var(--dim); font-size:11.5px; flex:0 0 auto;
+                       margin-top:2px; }
+  .sheet .bar2 { display:flex; gap:6px; align-items:center; margin-top:12px; }
+  .sheet .bar2 .grow { flex:1; }
+  .sheet .link { border:0; background:none; color:var(--accent); font:inherit;
+                 font-size:12.5px; padding:2px 4px; cursor:pointer; }
+  .sheet .link:hover { text-decoration:underline; }
+  .sheet .count { color:var(--dim); font-size:12.5px; }
   #jobs { position:fixed; right:16px; bottom:16px; width:300px; z-index:40;
           display:flex; flex-direction:column; gap:8px; }
   .job { position:relative; background:var(--panel); border:1px solid var(--edge);
@@ -140,6 +167,7 @@ PAGE = r"""<!doctype html>
   <div class="brand">yt<span>·</span>local</div>
   <input type="search" id="q" placeholder="Search titles and descriptions…" autocomplete="off">
   <select id="src"><option value="">Everything</option></select>
+  <span class="who-src" id="whosrc" hidden></span>
   <select id="sort" title="Sort order (remembered per view)"></select>
   <div class="chips">
     <button class="chip" id="f-have"      aria-pressed="false">Downloaded</button>
@@ -148,6 +176,8 @@ PAGE = r"""<!doctype html>
     <button class="chip" id="f-hidden" aria-pressed="false"
             title="Show what is hidden — private or deleted entries, and anything you hid">Hidden</button>
   </div>
+  <button class="chip" id="newsrc"
+          title="Track a channel or playlist">＋ source</button>
   <button class="chip" id="newcoll" title="New collection">＋ collection</button>
   <div class="stats" id="stats"></div>
 </header>
@@ -155,12 +185,40 @@ PAGE = r"""<!doctype html>
 
 <div id="jobs"></div>
 
-<div id="modal"><div class="box">
+<div id="modal" class="sheet"><div class="box">
   <h3>Add to collection</h3>
   <div class="who" id="mwho"></div>
   <div id="mlist"></div>
   <div class="mk"><input id="mnew" placeholder="New collection…" autocomplete="off">
     <button class="act" id="madd">Create</button></div>
+</div></div>
+
+<div id="srcmodal" class="sheet"><div class="box">
+  <h3 id="stitle">Track a channel or playlist</h3>
+  <div class="who hint" id="shint">An @handle, a channel URL, or a playlist URL
+    or <code>PL…</code> id.</div>
+  <div id="sask">
+    <div class="mk" style="margin-top:0">
+      <input id="snew" placeholder="@3blue1brown" autocomplete="off"
+             spellcheck="false">
+      <button class="act primary" id="sadd">Add</button></div>
+    <div class="bar2">
+      <span class="count grow">…or see what playlists a creator has:</span>
+      <button class="link" id="sbrowse">Browse →</button></div>
+  </div>
+  <div id="spick" hidden>
+    <div class="bar2" style="margin-top:0">
+      <span class="count grow" id="spickwho"></span>
+      <button class="link" id="sall">all</button>
+      <button class="link" id="snone">none</button></div>
+    <div class="picks" id="spicks"></div>
+    <div class="bar2">
+      <button class="link grow" style="text-align:left" id="sback">← back</button>
+      <button class="act primary" id="spickadd">Track selected</button></div>
+  </div>
+  <div class="err" id="serr" hidden></div>
+  <div class="who hint" style="margin:12px 0 0">Cataloguing reads titles only —
+    nothing downloads until you ask for it.</div>
 </div></div>
 
 <div id="player">
@@ -172,8 +230,8 @@ PAGE = r"""<!doctype html>
 
 <script>
 const state = { q:"", source:"", collection:"", have:null, starred:false,
-                unwatched:false, hidden:false, videos:[], ordered:false, collections:[],
-                sort:"default" };
+                unwatched:false, hidden:false, videos:[], ordered:false, sources:[],
+                collections:[], sort:"default" };
 const $ = s => document.querySelector(s);
 const fmtDur = s => { if(!s) return ""; s=Math.round(s);
   const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
@@ -214,6 +272,7 @@ async function refresh(opts) {
   const d = await api("/api/state?" + qs);
   state.videos = d.videos;
   state.ordered = d.ordered;
+  state.sources = d.sources;
   state.collections = d.collections;
   state.sort = d.sort;
   buildPicker(d.sources, d.collections);
@@ -233,7 +292,7 @@ function buildPicker(sources, colls) {
              : state.collection ? "c:" + state.collection : "";
   // Rebuild the options only when the set actually changes, so an open
   // dropdown survives the 1.2s job-polling refreshes.
-  const key = JSON.stringify([sources.map(s => [s.id, s.have, s.total]),
+  const key = JSON.stringify([sources.map(s => [s.id, s.creator, s.have, s.total]),
                               colls.map(c => [c.id, c.have, c.total])]);
   if (key !== pickerKey) {
     pickerKey = key;
@@ -245,14 +304,31 @@ function buildPicker(sources, colls) {
         const o = document.createElement("option");
         o.value = prefix + it.id;
         o.textContent = `${it.name} (${it.have}/${it.total})`;
+        // Hovering a generic title still answers "whose?". A channel is its
+        // own creator, so saying so twice would be noise.
+        if (it.creator && it.creator !== it.name)
+          o.title = `${it.name} — ${it.creator}`;
         g.appendChild(o);
       }
       sel.appendChild(g);
     };
-    group("Channels",  sources.filter(s => s.kind === "channel"),  "s:");
-    group("Playlists", sources.filter(s => s.kind === "playlist"), "s:");
+    group("Channels", sources.filter(s => s.kind === "channel"), "s:");
+    // "Lesson 1", "JLPT N5", "Tutorials" -- playlist titles repeat across
+    // creators, so each creator gets a group of their own rather than one
+    // flat list where two identical names sit side by side. The server hands
+    // them over already grouped by creator, unknown last, so insertion order
+    // is the order to show.
+    const byCreator = new Map();
+    for (const p of sources.filter(s => s.kind === "playlist")) {
+      const who = p.creator || "unknown creator";
+      if (!byCreator.has(who)) byCreator.set(who, []);
+      byCreator.get(who).push(p);
+    }
+    for (const [who, items] of byCreator)
+      group(`Playlists · ${who}`, items, "s:");
     group("Collections", colls, "c:");
   }
+  paintWho(sources, colls);
   // The picker always shows the view you are in, however you got here -- a
   // restored URL and the back button both move the state, not the dropdown.
   if (sel.value !== want) {
@@ -266,6 +342,24 @@ function buildPicker(sources, colls) {
       refresh();
     }
   }
+}
+
+// The creator of the view you are in, kept beside the picker: a collapsed
+// select shows the option text alone, and the option text is the bit that is
+// ambiguous between two playlists called the same thing.
+function paintWho(sources, colls) {
+  const el = $("#whosrc");
+  const src = state.source && sources.find(s => s.id === state.source);
+  let text = "";
+  if (src && src.kind === "playlist")
+    text = "▤ " + (src.creator || "unknown creator");
+  else if (src)
+    text = "▸ " + (src.handle || src.creator || src.name);
+  else if (state.collection)
+    text = "yours";
+  el.textContent = text;
+  el.title = text && src ? `${src.name} — ${text.slice(2)}` : "";
+  el.hidden = !text;
 }
 
 function buildSorts(sorts, current) {
@@ -293,7 +387,7 @@ function render(vs) {
       ? "Nothing is hidden."
       : state.q || state.source || state.collection || state.have !== null
       ? "Nothing matches those filters."
-      : "Catalog is empty — run  yt add @channel  in the terminal.";
+      : "Catalog is empty — press ＋ source above, or run  yt add @channel.";
     return;
   }
   vs.forEach((v, i) => grid.appendChild(card(v, state.ordered ? i + 1 : null)));
@@ -479,7 +573,8 @@ $("#pvideo").addEventListener("ended", async () => {
 });
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  if ($("#modal").classList.contains("on")) closeModal();
+  if ($("#srcmodal").classList.contains("on")) closeSrc();
+  else if ($("#modal").classList.contains("on")) closeModal();
   else if ($("#player").classList.contains("on")) close_();
   else dismissAllJobs();
 });
@@ -538,6 +633,146 @@ $("#newcoll").onclick = async () => {
   $("#mnew").focus();
 };
 
+/* ---- track a channel or playlist ---- */
+// The job this page is waiting on, so a source that finishes cataloguing can
+// drop you straight into it -- the terminal's "next: yt list <name>", without
+// the typing. Only ever one: a batch of playlists has no single view to land in.
+let pendingSource = null;
+function closeSrc() { $("#srcmodal").classList.remove("on"); askMode(); }
+function srcError(msg) {
+  // A rejected handle is worth reading next to the box that produced it, not
+  // in an alert that throws away what you typed.
+  const box = $("#serr");
+  box.textContent = msg;
+  box.hidden = false;
+}
+// Two modes in one sheet: ask for something to track, or pick from what a
+// creator has. Browsing replaces the box rather than opening a second window.
+function askMode() {
+  $("#sask").hidden = false;
+  $("#spick").hidden = true;
+  $("#serr").hidden = true;
+  $("#stitle").textContent = "Track a channel or playlist";
+  $("#shint").hidden = false;
+}
+function pickMode(creator, playlists) {
+  $("#sask").hidden = true;
+  $("#spick").hidden = false;
+  $("#serr").hidden = true;
+  $("#shint").hidden = true;
+  $("#stitle").textContent = creator;
+  const n = playlists.filter(p => !p.tracked).length;
+  $("#spickwho").textContent =
+    `${playlists.length} playlists · ${n} not tracked yet`;
+  const list = $("#spicks");
+  list.innerHTML = "";
+  for (const pl of playlists) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = pl.id;
+    // One you already track is shown, but not on offer: re-adding it would
+    // just be a sync, and the point of this list is what you are missing.
+    cb.disabled = pl.tracked;
+    cb.onchange = paintPickCount;
+    const title = document.createElement("span");
+    title.textContent = pl.title;
+    if (pl.tracked) title.style.opacity = ".55";
+    lab.appendChild(cb);
+    lab.appendChild(title);
+    if (pl.tracked) {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "tracked";
+      lab.appendChild(tag);
+    }
+    list.appendChild(lab);
+  }
+  paintPickCount();
+}
+const picked = () => [...$("#spicks").querySelectorAll("input:checked")]
+                       .map(cb => cb.value);
+function paintPickCount() {
+  const n = picked().length;
+  const btn = $("#spickadd");
+  btn.textContent = n ? `Track ${n} selected` : "Track selected";
+  btn.disabled = !n;
+}
+function setAll(on) {
+  for (const cb of $("#spicks").querySelectorAll("input:not(:disabled)"))
+    cb.checked = on;
+  paintPickCount();
+}
+
+$("#newsrc").onclick = () => {
+  $("#snew").value = "";
+  askMode();
+  $("#srcmodal").classList.add("on");
+  $("#snew").focus();
+};
+$("#srcmodal").onclick = e => { if (e.target.id === "srcmodal") closeSrc(); };
+
+async function addSource() {
+  const ref = $("#snew").value.trim();
+  if (!ref) return;
+  const btn = $("#sadd");
+  btn.disabled = true;
+  try {
+    const r = await post("/api/sources", {ref});
+    pendingSource = r.job.id;
+    closeSrc();
+    pollJobs();               // the card takes it from here
+  } catch (e) {
+    srcError(e.message);
+    $("#snew").focus();
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function browseSource() {
+  const creator = $("#snew").value.trim();
+  if (!creator) { srcError("paste a channel handle (@name) or a channel URL"); return; }
+  const btn = $("#sbrowse"), label = btn.textContent;
+  // Listing a playlists tab is a few seconds of yt-dlp, so say that plainly
+  // rather than leaving a dead button.
+  btn.disabled = true;
+  btn.textContent = "listing…";
+  $("#serr").hidden = true;
+  try {
+    const r = await post("/api/sources/browse", {creator});
+    pickMode(r.creator, r.playlists);
+  } catch (e) {
+    srcError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+async function addPicked() {
+  const refs = picked();
+  if (!refs.length) return;
+  const btn = $("#spickadd");
+  btn.disabled = true;
+  try {
+    const r = await post("/api/sources", {refs});
+    // One pick has a view to land in; a batch does not, so the cards report it.
+    pendingSource = refs.length === 1 ? r.job.id : null;
+    closeSrc();
+    pollJobs();
+  } catch (e) {
+    srcError(e.message);
+  } finally {
+    paintPickCount();
+  }
+}
+$("#sadd").onclick = addSource;
+$("#sbrowse").onclick = browseSource;
+$("#sall").onclick = () => setAll(true);
+$("#snone").onclick = () => setAll(false);
+$("#sback").onclick = askMode;
+$("#spickadd").onclick = addPicked;
+$("#snew").addEventListener("keydown", e => { if (e.key === "Enter") addSource(); });
+
 /* ---- jobs ---- */
 let jobTimer = null, lastJobs = [];
 // Cards the user closed. A finished job is dropped server-side too; a running
@@ -572,6 +807,17 @@ function renderJobs(jobs) {
     if (dismissed.has(j.id) && j.state !== "queued" && j.state !== "running")
       post("/api/jobs/clear", {id: j.id}).catch(() => {});
 
+  // A source that has just finished cataloguing is the view you asked for.
+  const waited = pendingSource && jobs.find(j => j.id === pendingSource);
+  if (waited && waited.state === "done" && waited.result) {
+    pendingSource = null;
+    state.source = waited.result.source_id;
+    state.collection = "";
+    refresh({push: true});
+  } else if (waited && waited.state === "error") {
+    pendingSource = null;
+  }
+
   const box = $("#jobs");
   box.innerHTML = "";
   const shown = jobs.filter(j => !dismissed.has(j.id));
@@ -590,7 +836,8 @@ function renderJobs(jobs) {
     el.innerHTML = `<button class="x" title="Dismiss">✕</button>
       <div class="t"></div><div class="d"></div>
       <div class="track"><i style="width:${pct}%"></i></div>`;
-    el.querySelector(".t").textContent = j.title;
+    el.querySelector(".t").textContent =
+      j.kind === "source" ? `＋ ${j.title}` : j.title;
     el.querySelector(".d").textContent =
       j.state === "error" ? j.error : (j.state === "done" ? "done" : j.detail);
     el.querySelector(".x").onclick = e => { e.stopPropagation(); dismissJob(j); };

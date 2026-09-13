@@ -84,14 +84,20 @@ def playlists_url(ref: str) -> str:
     return _channel_base(ref) + "/playlists"
 
 
-def list_playlists(cfg: dict, url: str):
+def list_playlists(cfg: dict, url: str, timeout=None):
     """Flat-list a channel's playlists tab. Returns (owner, [playlists]).
 
     The tab yields playlist entries, not videos: each carries a PL... id and a
     title but no video count, because counting would mean opening every one.
+
+    `timeout` is for callers that cannot wait forever -- the web UI browses
+    with a request thread held open, where a wedged yt-dlp would hang the tab.
     """
     cmd = base_cmd(cfg) + ["--flat-playlist", "--dump-json", "--ignore-errors", url]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise YtdlpError(f"timed out after {timeout}s listing {url}")
     owner, seen, found = None, set(), []
     for line in proc.stdout.splitlines():
         line = line.strip()

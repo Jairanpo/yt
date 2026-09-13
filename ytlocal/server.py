@@ -7,12 +7,65 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ytlocal import config, db, ytdlp
-from ytlocal.jobs import Downloader
+from ytlocal.jobs import Cataloguer, Downloader
 from ytlocal.ui import PAGE
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+# A job card is either a download (keyed by video id) or a source being
+# catalogued (keyed by what was typed into the Add box).
+_JOB_ID_RE = re.compile(r"^(?:src:.{1,400}|[A-Za-z0-9_-]{11})$", re.S)
+_HANDLE_RE = re.compile(r"^@?[A-Za-z0-9_.\-]{2,120}$")
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 CHUNK = 256 * 1024
+
+# Everything this library can actually track. A page that forbids outbound
+# requests of its own has no business handing an arbitrary URL to yt-dlp
+# because something got typed into a box.
+YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
+            "music.youtube.com", "youtu.be", "www.youtu.be"}
+
+
+def _check_yt_ref(raw, what: str) -> str:
+    """Trim and sanity-check anything the page offers as a thing to track.
+
+    Raises ValueError with something worth showing the user.
+    """
+    ref = (raw or "").strip()
+    if not ref:
+        raise ValueError(what)
+    if len(ref) > 400:
+        raise ValueError("that is too long to be a channel or playlist")
+    if "://" in ref or ref.lower().startswith("www."):
+        url = ref if "://" in ref else "https://" + ref
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+        if host not in YT_HOSTS:
+            raise ValueError(f"{host or 'that'} is not YouTube — this library "
+                             f"only tracks youtube.com")
+    elif not _HANDLE_RE.match(ref):
+        raise ValueError(what)
+    return ref
+
+
+def clean_source_ref(raw) -> str:
+    """What the Add box accepts: a handle, a bare id, or a YouTube URL."""
+    ref = _check_yt_ref(raw, "paste a channel handle (@name), a channel URL, "
+                             "a playlist URL or a PL… id")
+    if ytdlp.source_url(ref).endswith("/playlists"):
+        # The tab lists playlists, not videos, so syncing it would find
+        # nothing. Browsing it is the thing to do instead, and this page can.
+        raise ValueError("that is a creator's playlist index, not one source — "
+                         "use Browse to pick from it")
+    return ref
+
+
+def clean_creator_ref(raw) -> str:
+    """What Browse accepts: a creator, whose playlists tab we can then list."""
+    ref = _check_yt_ref(raw, "paste a channel handle (@name) or a channel URL "
+                             "to see what playlists it has")
+    if "list=" in ref or ref.startswith(("PL", "OLAK", "UU", "FL", "RD")):
+        raise ValueError("that is one playlist, not a creator — Add tracks it "
+                         "directly")
+    return ref
 
 
 # What an audio-only fetch leaves on disk, so a card can say so.
@@ -113,7 +166,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/subs/"):
                 return self._sub_langs(path[len("/api/subs/"):])
             if path == "/api/jobs":
-                return self._json({"jobs": self.server.dl.snapshot()})
+                return self._json({"jobs": self._jobs()})
             if path.startswith("/thumb/"):
                 return self._thumb(path[7:])
             if path.startswith("/media/"):
@@ -133,18 +186,59 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in url.path.split("/") if p]
         try:
             if url.path == "/api/jobs/clear":
-                vid = (self._body().get("id") or "").strip()
-                if vid:
-                    if not _ID_RE.match(vid):
-                        return self._fail(400, "bad video id")
-                    return self._json({"ok": self.server.dl.forget(vid)})
+                jid = (self._body().get("id") or "").strip()
+                if jid:
+                    if not _JOB_ID_RE.match(jid):
+                        return self._fail(400, "bad job id")
+                    return self._json({"ok": self.server.dl.forget(jid)
+                                             or self.server.cat.forget(jid)})
                 self.server.dl.forget_finished()
+                self.server.cat.forget_finished()
                 return self._json({"ok": True})
+            if url.path == "/api/sources/browse":
+                # Held open while yt-dlp lists the tab: a few seconds, and the
+                # sheet says so. Capped, so a wedged listing cannot hang the
+                # request thread for good.
+                try:
+                    ref = clean_creator_ref(self._body().get("creator"))
+                except ValueError as exc:
+                    return self._fail(400, str(exc))
+                try:
+                    owner, found = ytdlp.list_playlists(
+                        self.server.cat.cfg, ytdlp.playlists_url(ref), timeout=180)
+                except ytdlp.YtdlpError as exc:
+                    return self._fail(502, str(exc))
+                tracked = {r["id"] for r in db.sources(self.conn, "playlist")}
+                return self._json({
+                    "creator": owner or ref,
+                    "playlists": [{"id": pl["id"], "title": pl["title"],
+                                   "tracked": pl["id"] in tracked}
+                                  for pl in found],
+                })
             if len(parts) == 3 and parts[0] == "api":
                 action, vid = parts[1], parts[2]
                 if not _ID_RE.match(vid):
                     return self._fail(400, "bad video id")
                 return self._action(action, vid)
+            if url.path == "/api/sources":
+                # Tracking a channel or playlist is a handful of network
+                # round-trips, so it goes on the queue and reports itself
+                # through the same job cards a download uses. `refs` is the
+                # batch a browse produces; the queue runs them one at a time.
+                body = self._body()
+                raw = body.get("refs")
+                if raw is None:
+                    raw = [body.get("ref")]
+                if not isinstance(raw, list):
+                    return self._fail(400, "refs must be a list")
+                if not 1 <= len(raw) <= 50:
+                    return self._fail(400, "pick between 1 and 50 at a time")
+                try:
+                    refs = [clean_source_ref(r) for r in raw]
+                except ValueError as exc:
+                    return self._fail(400, str(exc))
+                jobs = [self.server.cat.enqueue(r).as_dict() for r in refs]
+                return self._json({"ok": True, "job": jobs[0], "jobs": jobs})
             if url.path == "/api/collections":
                 body = self._body()
                 name = (body.get("name") or "").strip()
@@ -166,6 +260,10 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
         except Exception as exc:  # noqa: BLE001
             self._fail(500, str(exc))
+
+    def _jobs(self) -> list:
+        """Every card the page should show. Sources first: they gate the rest."""
+        return self.server.cat.snapshot() + self.server.dl.snapshot()
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
@@ -203,9 +301,13 @@ class Handler(BaseHTTPRequestHandler):
             offset=int(one("offset", "0")),
             sort=sort,
         )
+        # creator is who the source belongs to -- a channel is its own, a
+        # playlist's is the channel that owns it. The picker groups on it,
+        # because playlist titles alone repeat across creators.
         srcs = [
             {"id": s["id"], "kind": s["kind"],
              "name": s["name"] or s["handle"] or s["url"],
+             "creator": s["creator"], "handle": s["handle"],
              "owner": s["owner"], "total": s["n_total"], "have": s["n_have"]}
             for s in db.sources(self.conn)
         ]
@@ -239,7 +341,7 @@ class Handler(BaseHTTPRequestHandler):
             "sort": sort,
             "sorts": [{"key": k, "label": sort_labels[k]} for k in db.SORTS],
             "stats": db.stats(self.conn),
-            "jobs": self.server.dl.snapshot(),
+            "jobs": self._jobs(),
         })
 
     def _action(self, action, vid):
@@ -391,5 +493,6 @@ def serve(cfg, port=None, host="127.0.0.1", verbose=False):
     httpd = ThreadingHTTPServer((host, port), Handler)
     httpd.daemon_threads = True
     httpd.dl = Downloader(cfg, config.media_dir(cfg))
+    httpd.cat = Cataloguer(cfg)
     httpd.verbose = verbose
     return httpd

@@ -249,13 +249,31 @@ def cmd_sources(args, cfg, conn):
     if not rows:
         out("nothing tracked. add one:  yt add @channel   or   yt add <playlist url>")
         return
-    for s in rows:
+    channels = [r for r in rows if r["kind"] == "channel"]
+    for s in channels:
         name = s["name"] or s["handle"] or s["url"]
-        tag = "▤ playlist" if s["kind"] == "playlist" else "▸ channel "
-        extra = s["owner"] if s["kind"] == "playlist" and s["owner"] else (
-            s["handle"] or "")
-        out(f"{C['dim']}{tag}{C['r']} {C['b']}{name:<34.34}{C['r']} "
-            f"{s['n_have']:>4}/{s['n_total']:<5} on disk  {C['dim']}{extra}{C['r']}")
+        out(f"{C['dim']}▸ channel{C['r']} {C['b']}{name:<34.34}{C['r']} "
+            f"{s['n_have']:>4}/{s['n_total']:<5} on disk  "
+            f"{C['dim']}{s['handle'] or ''}{C['r']}")
+    # Two creators' playlists can carry the very same title, so the creator is
+    # the heading and the titles sit under it -- one look tells you whose
+    # "Lesson 1" you are about to list. db.sources already hands them over in
+    # creator order, so a single pass is enough.
+    seen = None
+    gap = bool(channels)          # no stray blank line when there are no channels
+    for s in [r for r in rows if r["kind"] == "playlist"]:
+        who = s["creator"] or "unknown creator"
+        if who != seen:
+            seen = who
+            handle = s["handle"] or ""
+            out(("\n" if gap else "")
+                + f"{C['dim']}▤ playlists ·{C['r']} {C['b']}{who}{C['r']}"
+                  f"  {C['dim']}{handle}{C['r']}")
+            gap = True
+        name = s["name"] or s["url"]
+        if len(name) > 40:
+            name = name[:39] + "…"
+        out(f"    {name:<40} {s['n_have']:>4}/{s['n_total']:<5} on disk")
 
 
 def cmd_playlists(args, cfg, conn):
@@ -416,9 +434,13 @@ def cmd_info(args, cfg, conn):
         f"{v['id']}{C['r']}")
     srcs = db.video_sources(conn, v["id"])
     if srcs:
-        out("in: " + ", ".join(
-            f"{s['name']}" + (f" #{s['position'] + 1}" if s["kind"] == "playlist"
-                              else "") for s in srcs))
+        def where(s):
+            if s["kind"] != "playlist":
+                return s["name"]
+            owner = (s["owner"] or "").strip()
+            return (f"{s['name']}" + (f" ({owner})" if owner else "")
+                    + f" #{s['position'] + 1}")
+        out("in: " + ", ".join(where(s) for s in srcs))
     cols = db.collections_for(conn, v["id"])
     if cols:
         out("collections: " + ", ".join(c["name"] for c in cols))

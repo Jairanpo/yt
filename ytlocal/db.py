@@ -244,6 +244,11 @@ def _repair_playlist_ids(conn) -> None:
 
 def upsert_source(conn, sid, url, kind="channel", name=None, handle=None,
                   owner=None) -> None:
+    # YouTube pads some of these with stray whitespace ("Chienowa Japanese "),
+    # which then shows up as a group label of its own next to the trimmed one.
+    name, handle, owner = (
+        (v.strip() or None) if isinstance(v, str) else v
+        for v in (name, handle, owner))
     conn.execute(
         """INSERT INTO sources (id, kind, handle, name, owner, url, added_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -259,6 +264,14 @@ def upsert_source(conn, sid, url, kind="channel", name=None, handle=None,
 
 def sources(conn, kind=None) -> list:
     sql = """SELECT s.*,
+                -- Whose it is. A channel is its own creator; a playlist's is
+                -- the channel that owns it, and that is the only thing telling
+                -- one "JLPT N5" or "Lesson 1" playlist from the next.
+                COALESCE(
+                    NULLIF(TRIM(COALESCE(s.owner, '')), ''),
+                    CASE WHEN s.kind = 'channel'
+                         THEN NULLIF(TRIM(COALESCE(s.name, '')), '') END,
+                    NULLIF(TRIM(COALESCE(s.handle, '')), '')) AS creator,
                 (SELECT COUNT(*) FROM source_videos sv WHERE sv.source_id = s.id)
                     AS n_total,
                 (SELECT COUNT(*) FROM source_videos sv JOIN videos v ON v.id = sv.video_id
@@ -269,7 +282,11 @@ def sources(conn, kind=None) -> list:
     if kind:
         sql += " WHERE s.kind = ?"
         args.append(kind)
-    sql += " ORDER BY s.kind, COALESCE(s.name, s.url)"
+    # Grouped by creator before sorted by name, so every caller -- the picker,
+    # `yt sources` -- gets a creator's playlists together without regrouping.
+    # A source whose owner we never learned sorts last rather than first.
+    sql += (" ORDER BY s.kind, (creator IS NULL), creator COLLATE NOCASE,"
+            " COALESCE(s.name, s.url) COLLATE NOCASE")
     return conn.execute(sql, args).fetchall()
 
 
