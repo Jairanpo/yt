@@ -241,6 +241,16 @@ and `yt serve --status` never lies about a server that isn't there.
   keeps the catalog entry. **♪**, on anything not yet downloaded, fetches the
   audio alone. A watched card dims its thumbnail and flags itself *watched*; an
   audio-only one flags itself *audio ♪*.
+- **Watched videos sink out of the way.** Marking one watched slides its card
+  down into a collapsed **▸ Watched · N** bar at the foot of the page, so what
+  you have not got to yet keeps the top of the grid. Open the bar and they are
+  one compact line apiece — thumbnail, title, runtime — where **✓** sends one
+  back up and **↓** downloads one you never fetched. Open or shut is remembered
+  by your browser. This is not hiding: nothing leaves the catalog, the counts
+  still include them, and a view where everything is watched says so rather
+  than looking empty. Under a playlist's or a collection's own order nothing
+  moves at all — the position numbers are the point of those views — so pick
+  any other sort there if you want the fold back.
 - **Downloads** run in the background — queue as many as you like and progress
   cards appear bottom-right. Each has its own **✕**; a download that finished
   cleanly clears itself after a few seconds, failures wait until you have read

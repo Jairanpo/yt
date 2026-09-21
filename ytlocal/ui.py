@@ -79,6 +79,44 @@ PAGE = r"""<!doctype html>
   button.act:disabled { opacity:.55; cursor:default; }
   .icon { flex:0 0 auto; width:30px; padding:5px 4px; }
   .empty { color:var(--dim); text-align:center; padding:64px 20px; }
+  .empty.thin { padding:34px 20px 4px; }
+  /* Watched videos sink out of the grid into a fold at the foot of the page,
+     so what is still ahead of you keeps the top. Collapsing a card in place
+     would not buy anything: a grid row is as tall as its tallest card, so a
+     shrunken one just leaves a hole. */
+  .fold { margin-top:20px; }
+  .foldbar { display:flex; align-items:center; gap:9px; width:100%;
+             background:none; border:none; border-top:1px solid var(--edge);
+             color:var(--dim); font:inherit; font-size:13px; cursor:pointer;
+             padding:13px 2px 11px; text-align:left; }
+  .foldbar:hover { color:var(--ink); }
+  .foldbar .tw { font-size:10px; transition:transform .18s; }
+  .foldbar[aria-expanded=true] .tw { transform:rotate(90deg); }
+  .foldbar .grow { flex:1; }
+  .seenlist { display:flex; flex-direction:column; gap:1px; padding-bottom:10px; }
+  /* A class selector outranks the browser's own [hidden] rule, so the
+     display above would keep the list on screen while it is collapsed. */
+  .seenlist[hidden] { display:none; }
+  .srow { display:flex; align-items:center; gap:10px; padding:5px 6px;
+          border-radius:7px; cursor:pointer; }
+  .srow:hover { background:var(--panel); }
+  .srow img { flex:0 0 auto; width:64px; height:36px; object-fit:cover;
+              border-radius:4px; background:#26262c; opacity:.5; }
+  .srow:hover img { opacity:.85; }
+  .srow .t { flex:1; min-width:0; font-size:13.5px; color:var(--dim);
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .srow:hover .t { color:var(--ink); }
+  .srow .d { font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .srow .act { flex:0 0 auto; width:28px; }
+  /* The trip between grid and fold is played out where the card stands, so it
+     is seen to go somewhere rather than blink across the page. */
+  .card.sinking, .srow.rising { transition:opacity .22s, transform .22s;
+                                opacity:0; pointer-events:none; }
+  .card.sinking { transform:translateY(16px) scale(.96); }
+  .srow.rising { transform:translateY(-12px); }
+  @media (prefers-reduced-motion: reduce) {
+    .card.sinking, .srow.rising { transition:none; }
+  }
   /* player overlay */
   #player { position:fixed; inset:0; background:rgba(8,8,10,.94); z-index:50;
             display:none; flex-direction:column; padding:24px; }
@@ -181,7 +219,19 @@ PAGE = r"""<!doctype html>
   <button class="chip" id="newcoll" title="New collection">＋ collection</button>
   <div class="stats" id="stats"></div>
 </header>
-<main><div class="grid" id="grid"></div><div class="empty" id="empty" hidden></div></main>
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" hidden></div>
+  <div class="fold" id="fold" hidden>
+    <button class="foldbar" id="foldbar" aria-expanded="false"
+            aria-controls="seenlist">
+      <span class="tw">&#9654;</span>
+      <span class="grow" id="foldn"></span>
+      <span id="foldhint">show</span>
+    </button>
+    <div class="seenlist" id="seenlist" hidden></div>
+  </div>
+</main>
 
 <div id="jobs"></div>
 
@@ -378,9 +428,29 @@ function buildSorts(sorts, current) {
   if (sel.value !== current) sel.value = current;
 }
 
+// How long a card is given to play itself out before the page is rebuilt
+// around its absence.
+const SINK_MS = 240;
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let foldOpen = false;
+try { foldOpen = localStorage.getItem("yt.watched-open") === "1"; } catch (e) {}
+
+// A card in mid-flight between the grid and the fold must not be torn out from
+// under its own animation, and job polling rebuilds the page every 1.2s.
+let sinking = 0;
+function moveOut(el, cls) {
+  sinking++;
+  el.classList.add(cls);
+  setTimeout(() => { if (!--sinking) render(state.videos); },
+             REDUCED ? 0 : SINK_MS);
+}
+
 function render(vs) {
-  const grid = $("#grid"), empty = $("#empty");
+  if (sinking) return;
+  const grid = $("#grid"), empty = $("#empty"), fold = $("#fold");
   grid.innerHTML = "";
+  fold.hidden = true;
+  empty.classList.remove("thin");
   empty.hidden = vs.length > 0;
   if (!vs.length) {
     empty.textContent = state.hidden
@@ -390,7 +460,72 @@ function render(vs) {
       : "Catalog is empty — press ＋ source above, or run  yt add @channel.";
     return;
   }
-  vs.forEach((v, i) => grid.appendChild(card(v, state.ordered ? i + 1 : null)));
+  // Under a playlist's or a collection's own order the position numbers are
+  // the whole point, so nothing is allowed to move; everywhere else what you
+  // have already seen drops below the fold.
+  const split = !state.ordered;
+  const live = split ? vs.filter(v => !v.watched) : vs;
+  const seen = split ? vs.filter(v =>  v.watched) : [];
+  live.forEach((v, i) => grid.appendChild(card(v, state.ordered ? i + 1 : null)));
+
+  if (!live.length && seen.length) {
+    empty.hidden = false;
+    empty.classList.add("thin");
+    empty.textContent = "You have watched everything here.";
+  }
+  if (!seen.length) return;
+  fold.hidden = false;
+  $("#foldn").textContent = `Watched · ${seen.length}`;
+  const list = $("#seenlist");
+  list.innerHTML = "";
+  seen.forEach(v => list.appendChild(seenRow(v)));
+  paintFold();
+}
+
+function paintFold() {
+  $("#foldbar").setAttribute("aria-expanded", String(foldOpen));
+  $("#foldhint").textContent = foldOpen ? "hide" : "show";
+  $("#seenlist").hidden = !foldOpen;
+}
+$("#foldbar").onclick = () => {
+  foldOpen = !foldOpen;
+  try { localStorage.setItem("yt.watched-open", foldOpen ? "1" : "0"); }
+  catch (e) {}
+  paintFold();
+};
+
+// One line apiece down in the fold: enough to recognise a video and send it
+// back up, without the full card's worth of buttons you are done with.
+function seenRow(v) {
+  const el = document.createElement("div");
+  el.className = "srow";
+  el.innerHTML = `<img loading="lazy" src="/thumb/${v.id}" alt="">
+                  <span class="t"></span>
+                  <span class="d">${v.duration ? fmtDur(v.duration) : ""}</span>`;
+  el.querySelector(".t").textContent =
+    v.unavailable ? "Private or deleted video" : v.title;
+  el.title = v.unavailable ? v.id : v.title;
+  if (v.have) el.onclick = () => open_(v);
+  else el.style.cursor = "default";
+
+  if (!v.have && !v.unavailable) {
+    const get = document.createElement("button");
+    get.className = "act icon"; get.textContent = "↓";
+    get.title = "Download";
+    get.onclick = e => { e.stopPropagation(); grab(v, get); };
+    el.appendChild(get);
+  }
+  const back = document.createElement("button");
+  back.className = "act icon"; back.textContent = "✓";
+  back.title = "Mark as not watched — sends it back up to the grid";
+  back.onclick = async e => {
+    e.stopPropagation();
+    const r = await post(`/api/watched/${v.id}`);
+    v.watched = r.watched;
+    moveOut(el, "rising");
+  };
+  el.appendChild(back);
+  return el;
 }
 
 function card(v, seq) {
@@ -473,7 +608,9 @@ function card(v, seq) {
     v.watched = r.watched;
     paintSeen();
     // The Unwatched filter is showing a list this video may have just left.
-    if (state.unwatched) refresh();
+    if (state.unwatched) { refresh(); return; }
+    // Otherwise it sinks out of the grid and into the fold at the bottom.
+    if (!state.ordered) moveOut(el, "sinking");
   };
   row.appendChild(seen);
 
