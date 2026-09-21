@@ -242,11 +242,13 @@ and `yt serve --status` never lies about a server that isn't there.
   audio alone. A watched card dims its thumbnail and flags itself *watched*; an
   audio-only one flags itself *audio ♪*.
 - **Watched videos sink out of the way.** Marking one watched slides its card
-  down into a collapsed **▸ Watched · N** bar at the foot of the page, so what
-  you have not got to yet keeps the top of the grid. Open the bar and they are
-  one compact line apiece — thumbnail, title, runtime — where **✓** sends one
-  back up and **↓** downloads one you never fetched. Open or shut is remembered
-  by your browser. This is not hiding: nothing leaves the catalog, the counts
+  down into a **Watched · N** bar pinned to the bottom edge of the window, so
+  what you have not got to yet keeps the top of the grid. The bar stays in
+  reach whatever you have scrolled to — in a 300-card view the foot of the
+  document is nowhere to keep a control. Click it and the list comes up from
+  there, one compact line apiece — thumbnail, title, runtime — where **↺**
+  puts one back in the queue and **↓** downloads one you never fetched. Open or
+  shut is remembered by your browser. This is not hiding: nothing leaves the catalog, the counts
   still include them, and a view where everything is watched says so rather
   than looking empty. Under a playlist's or a collection's own order nothing
   moves at all — the position numbers are the point of those views — so pick

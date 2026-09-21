@@ -84,16 +84,31 @@ PAGE = r"""<!doctype html>
      so what is still ahead of you keeps the top. Collapsing a card in place
      would not buy anything: a grid row is as tall as its tallest card, so a
      shrunken one just leaves a hole. */
-  .fold { margin-top:20px; }
+  /* The bar is pinned to the window's bottom edge rather than left at the foot
+     of the document: in a 300-card view the foot of the document is a few
+     hundred cards away, which is nowhere to keep a control you want to reach.
+     The list opens upward from it, so the handle never moves. */
+  .fold { position:fixed; left:0; right:0; bottom:0; z-index:30;
+          display:flex; flex-direction:column; background:var(--bg);
+          border-top:1px solid var(--edge);
+          box-shadow:0 -2px 12px rgba(0,0,0,.14); }
   .foldbar { display:flex; align-items:center; gap:9px; width:100%;
-             background:none; border:none; border-top:1px solid var(--edge);
-             color:var(--dim); font:inherit; font-size:13px; cursor:pointer;
-             padding:13px 2px 11px; text-align:left; }
+             background:none; border:none; color:var(--dim); font:inherit;
+             font-size:13px; cursor:pointer; padding:11px 20px; text-align:left; }
   .foldbar:hover { color:var(--ink); }
-  .foldbar .tw { font-size:10px; transition:transform .18s; }
+  /* Collapsed the caret points up -- the list comes up from here; open, it
+     points down at the way to put it away again. */
+  .foldbar .tw { font-size:10px; transition:transform .18s;
+                 transform:rotate(-90deg); }
   .foldbar[aria-expanded=true] .tw { transform:rotate(90deg); }
   .foldbar .grow { flex:1; }
-  .seenlist { display:flex; flex-direction:column; gap:1px; padding-bottom:10px; }
+  .seenlist { display:flex; flex-direction:column; gap:1px;
+              max-height:min(50vh,420px); overflow-y:auto;
+              padding:8px 20px 6px; border-bottom:1px solid var(--edge); }
+  /* Room for the bar, so the last row of cards and the job stack are not
+     sitting underneath it. */
+  body.hasfold main { padding-bottom:72px; }
+  body.hasfold #jobs { bottom:62px; }
   /* A class selector outranks the browser's own [hidden] rule, so the
      display above would keep the list on screen while it is collapsed. */
   .seenlist[hidden] { display:none; }
@@ -222,16 +237,17 @@ PAGE = r"""<!doctype html>
 <main>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden></div>
-  <div class="fold" id="fold" hidden>
-    <button class="foldbar" id="foldbar" aria-expanded="false"
-            aria-controls="seenlist">
-      <span class="tw">&#9654;</span>
-      <span class="grow" id="foldn"></span>
-      <span id="foldhint">show</span>
-    </button>
-    <div class="seenlist" id="seenlist" hidden></div>
-  </div>
 </main>
+
+<div class="fold" id="fold" hidden>
+  <div class="seenlist" id="seenlist" hidden></div>
+  <button class="foldbar" id="foldbar" aria-expanded="false"
+          aria-controls="seenlist">
+    <span class="tw">&#9654;</span>
+    <span class="grow" id="foldn"></span>
+    <span id="foldhint">show</span>
+  </button>
+</div>
 
 <div id="jobs"></div>
 
@@ -450,6 +466,7 @@ function render(vs) {
   const grid = $("#grid"), empty = $("#empty"), fold = $("#fold");
   grid.innerHTML = "";
   fold.hidden = true;
+  document.body.classList.remove("hasfold");
   empty.classList.remove("thin");
   empty.hidden = vs.length > 0;
   if (!vs.length) {
@@ -475,6 +492,7 @@ function render(vs) {
   }
   if (!seen.length) return;
   fold.hidden = false;
+  document.body.classList.add("hasfold");
   $("#foldn").textContent = `Watched · ${seen.length}`;
   const list = $("#seenlist");
   list.innerHTML = "";
@@ -515,9 +533,11 @@ function seenRow(v) {
     get.onclick = e => { e.stopPropagation(); grab(v, get); };
     el.appendChild(get);
   }
+  // Not a tick: every row down here is already watched, so a checkmark would
+  // read as "mark this done" when the only thing it does is undo that.
   const back = document.createElement("button");
-  back.className = "act icon"; back.textContent = "✓";
-  back.title = "Mark as not watched — sends it back up to the grid";
+  back.className = "act icon"; back.textContent = "↺";
+  back.title = "Put back in the queue — marks it not watched";
   back.onclick = async e => {
     e.stopPropagation();
     const r = await post(`/api/watched/${v.id}`);
