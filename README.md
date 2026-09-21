@@ -236,9 +236,9 @@ and `yt serve --status` never lies about a server that isn't there.
   bookmarked.
 - **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
   reads **Watch** if the file is local and **Download** if it isn't; clicking
-  the thumbnail or title does the same thing. **☆** stars, **○ / ✓** marks
-  watched or not, **⊘** hides it, **✕** deletes the file (with a confirm) and
-  keeps the catalog entry. **♪**, on anything not yet downloaded, fetches the
+  the thumbnail or title does the same thing. **☆** stars, **✓** marks it
+  watched and **↺** puts it back in the queue, **⊘** hides it, **✕** deletes
+  the file (with a confirm) and keeps the catalog entry. **♪**, on anything not yet downloaded, fetches the
   audio alone. A watched card dims its thumbnail and flags itself *watched*; an
   audio-only one flags itself *audio ♪*.
 - **Watched videos sink out of the way.** Marking one watched slides its card

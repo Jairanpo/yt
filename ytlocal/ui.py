@@ -614,11 +614,15 @@ function card(v, seq) {
                                star.textContent = r.starred ? "★" : "☆"; };
   row.appendChild(star);
 
+  // The glyph is what the button will do, not what the video already is: a
+  // tick you press to tick something off. Undoing gets the same arrow the
+  // folded rows use, so one symbol never means both.
   const seen = document.createElement("button");
   seen.className = "act icon";
   const paintSeen = () => {
-    seen.textContent = v.watched ? "✓" : "○";
-    seen.title = v.watched ? "Mark as not watched" : "Mark as watched";
+    seen.textContent = v.watched ? "↺" : "✓";
+    seen.title = v.watched ? "Put back in the queue — marks it not watched"
+                           : "Mark as watched";
     el.classList.toggle("watched", !!v.watched);
     el.querySelector(".flag.seen").hidden = !v.watched;
   };
