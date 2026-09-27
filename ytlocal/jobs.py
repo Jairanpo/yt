@@ -165,6 +165,8 @@ class Cataloguer(_Queue):
                 new, total, _ = db.upsert_videos(conn, sid, entries,
                                                  prune=limit is None)
                 db.mark_synced(conn, sid)
+                # Adding something again is asking to see it: off the shelf.
+                db.set_shelved(conn, [sid], False)
                 # Now that it has a name, the card can stop calling it by
                 # whatever was typed into the box.
                 job.title = meta.get("name") or meta.get("handle") or sid

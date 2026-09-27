@@ -254,6 +254,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._fail(400, "name required")
                 c = db.create_collection(self.conn, name)
                 return self._json({"ok": True, "id": c["id"], "name": c["name"]})
+            if url.path == "/api/shelve":
+                body = self._body()
+                sid = body.get("source") or ""
+                if not self.conn.execute("SELECT 1 FROM sources WHERE id = ?",
+                                         (sid,)).fetchone():
+                    return self._fail(404, "unknown source")
+                value = bool(body.get("value", True))
+                db.set_shelved(self.conn, [sid], value)
+                return self._json({"ok": True, "shelved": value})
             if url.path == "/api/sort":
                 body = self._body()
                 sort = body.get("sort") or "default"
@@ -318,6 +327,7 @@ class Handler(BaseHTTPRequestHandler):
              "name": s["name"] or s["handle"] or s["url"],
              "creator": g["creator"] or s["creator"], "handle": s["handle"],
              "group": g["key"], "owner": s["owner"],
+             "shelved": bool(s["shelved"]),
              "total": s["n_total"], "have": s["n_have"]}
             for g in db.by_creator(db.sources(self.conn))
             for s in ([g["channel"]] if g["channel"] else []) + g["items"]

@@ -39,6 +39,7 @@ PAGE = r"""<!doctype html>
   .who-src { color:var(--dim); font-size:12.5px; max-width:32ch;
              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .stats { color:var(--dim); font-size:13px; margin-left:auto; }
+  #shelve[hidden] { display:none; }
   main { padding:20px; }
   .grid { display:grid; gap:18px;
           grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); }
@@ -224,6 +225,7 @@ PAGE = r"""<!doctype html>
   <input type="search" id="q" placeholder="Search titles and descriptions…" autocomplete="off">
   <select id="src"><option value="">Everything</option></select>
   <span class="who-src" id="whosrc" hidden></span>
+  <button class="chip" id="shelve" hidden></button>
   <select id="sort" title="Sort order (remembered per view)"></select>
   <div class="chips">
     <button class="chip" id="f-have"      aria-pressed="false">Downloaded</button>
@@ -366,7 +368,7 @@ function buildPicker(sources, colls) {
   // Rebuild the options only when the set actually changes, so an open
   // dropdown survives the 1.2s job-polling refreshes.
   const key = JSON.stringify([sources.map(s => [s.id, s.group, s.section, s.creator,
-                                                 s.have, s.total]),
+                                                 s.shelved, s.have, s.total]),
                               colls.map(c => [c.id, c.have, c.total])]);
   if (key !== pickerKey) {
     pickerKey = key;
@@ -392,7 +394,7 @@ function buildPicker(sources, colls) {
     // ambiguous. The server hands them over already grouped and ordered, so
     // insertion order is the order to show.
     const byCreator = new Map();
-    for (const s of sources) {
+    for (const s of sources.filter(s => !s.shelved)) {
       if (!byCreator.has(s.group)) byCreator.set(s.group, []);
       byCreator.get(s.group).push(s);
     }
@@ -401,8 +403,14 @@ function buildPicker(sources, colls) {
             it => it.kind === "channel" ? `${glyph(it)} All videos`
                                         : `${glyph(it)} ${it.name}`);
     group("Collections", colls, "c:", it => it.name);
+    // Shelved sources are out of the way, not out of reach: last, and each
+    // one says whose it is, since its creator's group is not around it.
+    group("Shelved", sources.filter(s => s.shelved), "s:",
+          it => it.kind === "channel" ? `${glyph(it)} ${it.name} — all videos`
+                                      : `${glyph(it)} ${it.name} — ${it.creator || "?"}`);
   }
   paintWho(sources, colls);
+  paintShelve(sources);
   // The picker always shows the view you are in, however you got here -- a
   // restored URL and the back button both move the state, not the dropdown.
   if (sel.value !== want) {
@@ -435,6 +443,25 @@ function paintWho(sources, colls) {
   el.title = text && src ? `${src.name} — ${text.slice(2)}` : "";
   el.hidden = !text;
 }
+
+// Only a source can be shelved; the button names what pressing it would do.
+function paintShelve(sources) {
+  const b = $("#shelve");
+  const src = state.source && sources.find(s => s.id === state.source);
+  b.hidden = !src;
+  if (!src) return;
+  b.textContent = src.shelved ? "Unshelve" : "Shelve";
+  b.title = src.shelved
+    ? "Bring it back into the picker, Everything and full syncs"
+    : "Put it away for later: out of the picker, Everything and full syncs. " +
+      "Still tracked, and still under Shelved in the picker.";
+}
+$("#shelve").onclick = async () => {
+  const src = state.sources.find(s => s.id === state.source);
+  if (!src) return;
+  await post("/api/shelve", {source: src.id, value: !src.shelved});
+  refresh();
+};
 
 function buildSorts(sorts, current) {
   const sel = $("#sort");

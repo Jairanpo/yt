@@ -372,7 +372,42 @@ $ yt playlists @3blue1brown --add 19,20
 
 `--add` also takes `all`, and `--limit N` caps how much of each playlist gets
 catalogued. Without a terminal to prompt on, `yt playlists <creator>` just
-prints the list.
+prints the list. A **⏸** in place of the ✓ means you track it but it is
+[shelved](#shelving-what-you-are-not-ready-for).
+
+### Shelving what you are not ready for
+
+Tracking a creator's whole catalogue is cheap, but seeing all of it at once is
+not. Shelve the parts you are saving for later. A shelved source is still
+tracked, but it drops out of the picker, out of Everything and out of a full
+`yt sync`:
+
+```console
+$ yt playlists @Aki-SenseiJPN --add all     # track the lot…
+$ yt shelve --creator @Aki-SenseiJPN        # …and put it all away
+  ▤ JLPTN5
+  ▤ SLOW and EASY Japanese Listening
+2 shelved
+
+$ yt shelve                                 # what is on the shelf
+$ yt shelve --off JLPTN5                    # ready for this one now
+$ yt sync JLPTN5                            # catch it up
+```
+
+`yt shelve <name>…` shelves particular sources, a channel included.
+`--creator` takes a creator's courses, live streams and playlists, but not
+their channel. You would only track the channel if you follow its uploads, so
+it has to be shelved by name.
+
+Shelving hides the **source**, not its videos. A video that is also in a
+channel or playlist you haven't shelved still shows there, and in Everything.
+Opening a shelved source by name (`yt list JLPTN5`) shows all of it, and so do
+naming a video and `yt get --starred`. Adding a shelved source again with
+`yt add` or Browse takes it off the shelf.
+
+In the web library, open a source and press **Shelve** next to the picker.
+Shelved sources sit in their own **Shelved** group at the bottom of the
+picker, where **Unshelve** brings them back.
 
 ---
 
@@ -520,7 +555,8 @@ a name to sync just one source. Note that `sync` indexes the *whole* source —
 if you first used `yt add --limit 20`, the catalogue will grow past 20. That's
 intended; metadata is nearly free. A full sync also drops videos that were
 removed from a playlist upstream; a `--limit` run never prunes, since it hasn't
-seen the tail.
+seen the tail. A full sync skips [shelved](#shelving-what-you-are-not-ready-for)
+sources. `--shelved` includes them, and naming one always syncs it.
 
 ### When something is dropped from a playlist
 
@@ -620,7 +656,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | Command | What it does |
 | --- | --- |
 | `yt add <@handle\|url\|PL…>` | Track a channel or playlist and catalog it. `--limit N` for just the newest N. |
-| `yt sync [source]` | Refresh catalogs; never downloads on its own. `--show-new`, `--limit N`, `--tidy [-y]` to delete videos that left every source, files included. |
+| `yt sync [source]` | Refresh catalogs; never downloads on its own. `--show-new`, `--limit N`, `--tidy [-y]` to delete videos that left every source, files included. `--shelved` includes shelved sources. |
 | `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--hidden`, `--sort KEY [--save]`. |
 | `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--source X`, `-c COLLECTION`, `--audio`. |
 | `yt collect …` | Your own collections — see [Collections](#collections). |
@@ -635,6 +671,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt sources` | List everything by creator: their channel, then courses, live streams and playlists, with on-disk counts. `--kind channel\|playlist`. |
 | `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
 | `yt playlists <@handle\|url>` | List a creator's courses, live streams and playlists and pick the ones to track by number. `--add 1,3-5\|all` skips the prompt. |
+| `yt shelve [source…]` | Put sources away for later, still tracked. `--creator @handle` for all of a creator's courses and playlists, `--off` to bring them back. With no arguments, lists what is shelved. |
 | `yt forget <source>` | Stop tracking. Downloaded files and collections stay. `-y` skips the prompt. |
 | `yt config [--init]` | Show settings, or write a config file to edit. |
 | `yt block` | How to block youtube.com without breaking downloads. |

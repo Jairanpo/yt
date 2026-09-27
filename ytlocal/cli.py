@@ -122,11 +122,15 @@ def add_source(cfg, conn, ref, limit=None, quiet=False, section=None):
                      meta.get("channel_id"), section or meta.get("section"))
     new, total, _ = db.upsert_videos(conn, sid, entries, prune=limit is None)
     db.mark_synced(conn, sid)
+    # Adding something again is asking to see it, so it comes off the shelf.
+    back = db.set_shelved(conn, [sid], False)
     name = meta.get("name") or meta.get("handle") or sid
     label = (section or meta.get("section") or kind).replace("live", "live streams")
     owner = f" {C['dim']}({meta['owner']}){C['r']}" if meta.get("owner") else ""
     out(f"{C['ok']}added{C['r']} {label} {C['b']}{name}{C['r']}{owner} — "
         f"{total} videos catalogued ({new} new). Nothing downloaded yet.")
+    if back:
+        out(f"{C['dim']}it was shelved — back in the library now{C['r']}")
     gone = sum(1 for e in entries if e.get("unavailable"))
     if gone:
         out(f"{C['dim']}{gone} of them are private or deleted — hidden. "
@@ -150,9 +154,16 @@ def cmd_add(args, cfg, conn):
 
 def cmd_sync(args, cfg, conn):
     targets = db.sources(conn)
+    shelved = 0
     if args.source:
+        # Naming one is asking for it, shelved or not.
         targets = [_source_or_die(conn, args.source)]
-    if not targets:
+    elif not args.shelved:
+        # A shelf of a creator's whole back catalogue would otherwise cost a
+        # round-trip per playlist on every sync, for things you set aside.
+        shelved = sum(1 for t in targets if t["shelved"])
+        targets = [t for t in targets if not t["shelved"]]
+    if not targets and not shelved:
         die("nothing tracked yet — start with: yt add @somechannel")
 
     grand_new = grand_gone = 0
@@ -179,6 +190,9 @@ def cmd_sync(args, cfg, conn):
             for v in db.query_videos(conn, source=src["id"], limit=new):
                 out("    " + fmt_row(v))
     out(f"\n{grand_new} new video(s) across {len(targets)} source(s).")
+    if shelved:
+        out(f"{C['dim']}{shelved} shelved source(s) skipped — "
+            f"yt sync --shelved to include them{C['r']}")
     if grand_gone:
         out(f"{C['dim']}{grand_gone} entries are private or deleted "
             f"(yt list --hidden){C['r']}")
@@ -264,6 +278,17 @@ def cmd_sources(args, cfg, conn):
     if not rows:
         out("nothing tracked. add one:  yt add @channel   or   yt add <playlist url>")
         return
+    shelved = sum(1 for r in rows if r["shelved"])
+    rows = [r for r in rows if not r["shelved"]]
+    if rows:
+        print_sources(rows)
+    else:
+        out("everything you track is shelved.")
+    if shelved:
+        out(f"{C['dim']}{shelved} shelved — yt shelve to list them{C['r']}")
+
+
+def print_sources(rows):
     # The creator is the root: their channel, then everything of theirs you
     # track beneath it. Two creators' playlists can carry the very same title,
     # and under its creator one look tells you whose "Lesson 1" it is.
@@ -294,11 +319,13 @@ def cmd_playlists(args, cfg, conn):
     owner, found = ytdlp.browse(cfg, args.creator)
     db.mark_courses(conn, (pl["id"] for pl in found
                                  if pl["section"] == "course"))
-    tracked = {row["id"] for row in db.sources(conn, "playlist")}
+    mine = db.sources(conn, "playlist")
+    tracked = {row["id"] for row in mine}
+    shelf = {row["id"] for row in mine if row["shelved"]}
     width = max(30, shutil.get_terminal_size((100, 24)).columns - 42)
 
     out(f"\n{C['b']}{owner or args.creator}{C['r']}"
-        f"  {C['dim']}(✓ = already tracked){C['r']}")
+        f"  {C['dim']}(✓ = already tracked · ⏸ = shelved){C['r']}")
     section = None
     for i, pl in enumerate(found, 1):
         if pl["section"] != section:
@@ -306,7 +333,8 @@ def cmd_playlists(args, cfg, conn):
             count = sum(1 for p in found if p["section"] == section)
             out(f"\n  {C['dim']}{GLYPHS[section]}{C['r']} "
                 f"{C['b']}{SECTION_NAMES[section]}{C['r']} {C['dim']}{count}{C['r']}")
-        mark = f"{C['ok']}✓{C['r']}" if pl["id"] in tracked else " "
+        mark = (f"{C['dim']}⏸{C['r']}" if pl["id"] in shelf
+                else f"{C['ok']}✓{C['r']}" if pl["id"] in tracked else " ")
         title = pl["title"]
         if len(title) > width:
             title = title[: width - 1] + "…"
@@ -374,6 +402,66 @@ def _pick_playlists(args, found, tracked):
         die(f"cannot read {spec.strip()!r} as playlist numbers "
             f"(expected 1-{len(found)}, e.g. 1,3-5 or all)")
     return [found[i - 1] for i in picks]
+
+
+def _creator_items(conn, needle):
+    """Every course, live list and playlist tracked under one creator."""
+    n = needle.strip().lstrip("@").lower()
+    groups = db.by_creator(db.sources(conn))
+
+    def names(g):
+        return {x.strip().lstrip("@").lower()
+                for x in (g["creator"], g["handle"]) if x}
+    hit = ([g for g in groups if n in names(g)]
+           or [g for g in groups if any(n in x for x in names(g))])
+    if not hit:
+        die(f"no tracked creator matching {needle!r} (see: yt sources)")
+    if len(hit) > 1:
+        die(f"{needle!r} matches " + ", ".join(g["creator"] or "?" for g in hit)
+            + " — be more specific")
+    return hit[0]
+
+
+def cmd_shelve(args, cfg, conn):
+    """Put sources away without forgetting them -- or bring them back."""
+    value = not args.off
+    if args.creator:
+        if args.target:
+            die("give sources, or --creator — not both")
+        g = _creator_items(conn, args.creator)
+        rows = g["items"]
+        if not rows:
+            die(f"{g['creator']} has no courses or playlists tracked, only "
+                f"the channel — shelve that by name if you mean to")
+    elif args.target:
+        rows = [_source_or_die(conn, t) for t in args.target]
+    else:
+        rows = [r for r in db.sources(conn) if r["shelved"]]
+        if not rows:
+            out("nothing is shelved.")
+            return
+        print_sources(rows)
+        out(f"{C['dim']}yt shelve --off \"<name>\" to bring one back{C['r']}")
+        return
+
+    changed = db.set_shelved(conn, (r["id"] for r in rows), value)
+    for r in rows:
+        name = "all videos" if r["kind"] == "channel" else r["name"] or r["url"]
+        out(f"  {C['dim']}{glyph(r)}{C['r']} {name}")
+    verb = "shelved" if value else "back in the library"
+    out(f"{C['ok']}{changed}{C['r']} {verb}"
+        + (f" {C['dim']}({len(rows) - changed} already were){C['r']}"
+           if changed < len(rows) else ""))
+    if value:
+        out(f"{C['dim']}still tracked: yt list \"<name>\" opens one · "
+            f"yt shelve --off to bring it back{C['r']}")
+        if args.creator and g["channel"] and not g["channel"]["shelved"]:
+            out(f"{C['dim']}their channel is still in the library, and its "
+                f"videos with it — yt shelve \"{g['handle'] or g['creator']}\" "
+                f"puts that away too{C['r']}")
+    elif changed:
+        out(f"{C['dim']}they skipped full syncs while shelved — "
+            f"yt sync to catch up{C['r']}")
 
 
 def cmd_forget(args, cfg, conn):
@@ -536,7 +624,8 @@ def cmd_get(args, cfg, conn):
             return
         out(f"{C['dim']}{len(rows)} to fetch from {grp['name']}{C['r']}")
     elif args.starred:
-        rows = db.query_videos(conn, starred=True, have=False)
+        # A star is a request of its own; the shelf does not overrule it.
+        rows = db.query_videos(conn, starred=True, have=False, shelved=True)
         if not rows:
             out("no starred videos left to download.")
             return
@@ -948,6 +1037,8 @@ def build_parser():
                    help="delete videos that left every source, files and all")
     s.add_argument("-y", "--yes", action="store_true",
                    help="skip the confirmation --tidy asks for")
+    s.add_argument("--shelved", action="store_true",
+                   help="sync shelved sources too")
     s.set_defaults(fn=cmd_sync)
 
     src = sub.add_parser("sources", help="list tracked channels and playlists")
@@ -966,6 +1057,16 @@ def build_parser():
                     help="add these by number without prompting: 1,3-5 or all")
     pl.add_argument("--limit", type=int, help="only catalog the newest N per playlist")
     pl.set_defaults(fn=cmd_playlists, kind="playlist")
+
+    sh = sub.add_parser("shelve", help="put sources away for later (or bring them back)",
+                        description="A shelved source stays tracked but leaves "
+                                    "the picker, Everything and full syncs. "
+                                    "No arguments lists what is shelved.")
+    sh.add_argument("target", nargs="*", help="channel or playlist names")
+    sh.add_argument("--creator", metavar="@HANDLE",
+                    help="every course, live list and playlist of this creator")
+    sh.add_argument("--off", action="store_true", help="bring them back")
+    sh.set_defaults(fn=cmd_shelve)
 
     f = sub.add_parser("forget", help="stop tracking a channel or playlist")
     f.add_argument("source")

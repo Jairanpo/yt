@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS sources (
     owner       TEXT,               -- for playlists: the channel that owns it
     channel_id  TEXT,               -- the UC... id it hangs under; a channel's own
     section     TEXT,               -- playlists: 'course' | 'live' | NULL (plain)
+    -- Put away for later: still tracked, still browsable by name, but out of
+    -- the picker, out of Everything and out of a full sync until you want it.
+    shelved     INTEGER NOT NULL DEFAULT 0,
     url         TEXT NOT NULL,
     added_at    INTEGER NOT NULL,
     last_sync   INTEGER
@@ -202,6 +205,9 @@ def _add_missing_columns(conn) -> None:
     for col in ("channel_id", "section"):
         if col not in have_src:
             conn.execute(f"ALTER TABLE sources ADD COLUMN {col} TEXT")
+    if "shelved" not in have_src:
+        conn.execute(
+            "ALTER TABLE sources ADD COLUMN shelved INTEGER NOT NULL DEFAULT 0")
     # A channel is its own root. A playlist learns its channel on its next
     # sync; until then the library matches it up by the creator's name.
     conn.execute("UPDATE sources SET channel_id = id "
@@ -372,6 +378,19 @@ def by_creator(rows) -> list:
                   key=lambda g: (g["creator"] is None, (g["creator"] or "").lower()))
 
 
+def set_shelved(conn, ids, value: bool) -> int:
+    """Shelve (or bring back) these sources. Returns how many changed."""
+    ids = list(ids)
+    if not ids:
+        return 0
+    cur = conn.execute(
+        f"UPDATE sources SET shelved = ? WHERE shelved != ? "
+        f"AND id IN ({','.join('?' * len(ids))})",
+        [int(value), int(value), *ids])
+    conn.commit()
+    return cur.rowcount
+
+
 def find_source(conn, needle: str):
     n = needle.strip().lstrip("@").lower()
     return conn.execute(
@@ -485,8 +504,13 @@ def get_video(conn, vid: str):
 
 def query_videos(conn, source=None, collection=None, q=None, have=None,
                  starred=None, unwatched=False, hidden=False, limit=None, offset=0,
-                 sort=None) -> list:
-    """Rows for one view. `sort` is a key from SORTS; None means "default"."""
+                 sort=None, shelved=False) -> list:
+    """Rows for one view. `sort` is a key from SORTS; None means "default".
+
+    Everything -- no source, no collection -- leaves out videos that only
+    shelved sources carry, unless `shelved` asks for them. Opening a shelved
+    source or a collection by name always shows all of it.
+    """
     args, joins, where = [], "", []
     playlist_order = False
     explicit = SORTS[sort][1] if sort and sort in SORTS else None
@@ -513,6 +537,16 @@ def query_videos(conn, source=None, collection=None, q=None, have=None,
         where.append("v.watched = 0")
     # Hidden is the whole of visibility: unavailable only explains why.
     where.append("v.hidden != 0" if hidden else "v.hidden = 0")
+    if not (source or collection or shelved):
+        # Out of sight only when nothing unshelved still lists it: a video in
+        # a shelved playlist and in a channel you follow stays in the channel.
+        where.append(
+            """(NOT EXISTS (SELECT 1 FROM source_videos x JOIN sources s
+                            ON s.id = x.source_id
+                         WHERE x.video_id = v.id AND s.shelved = 1)
+                OR EXISTS (SELECT 1 FROM source_videos x JOIN sources s
+                            ON s.id = x.source_id
+                         WHERE x.video_id = v.id AND s.shelved = 0))""")
 
     sql = _SEL + joins
     if where:
@@ -545,11 +579,13 @@ def resolve_video(conn, needle: str, source=None, collection=None):
         row = get_video(conn, needle)
         if row:
             return row, []
-    hits = query_videos(conn, source=source, collection=collection, q=needle, limit=25)
+    # Naming a video is asking for it, shelf or no shelf.
+    hits = query_videos(conn, source=source, collection=collection, q=needle,
+                        limit=25, shelved=True)
     if not hits:
         # Naming a hidden video is how you unhide it, so it has to be findable.
         hits = query_videos(conn, source=source, collection=collection, q=needle,
-                            hidden=True, limit=25)
+                            hidden=True, limit=25, shelved=True)
     if len(hits) == 1:
         return hits[0], []
     return None, hits
