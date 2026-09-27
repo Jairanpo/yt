@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -42,7 +43,9 @@ def check(cfg: dict) -> str:
     return out.stdout.strip()
 
 
-_TAB_RE = re.compile(r"/(videos|streams|shorts|playlists)$")
+_TAB_RE = re.compile(r"/(videos|streams|shorts|playlists|courses)$")
+# Tabs that list playlists rather than videos: syncing one would find nothing.
+INDEX_TABS = ("/playlists", "/courses")
 
 
 def _channel_base(ref: str) -> str:
@@ -60,8 +63,9 @@ def source_url(ref: str) -> str:
         return f"https://www.youtube.com/playlist?list={ref}"
     if "list=" in ref:
         return ref
-    # A tab the user named explicitly is left alone -- including /playlists,
-    # which is not a video listing at all and is caught by the caller.
+    # A tab the user named explicitly is left alone -- including /playlists
+    # and /courses, which are not video listings at all and are caught by the
+    # caller.
     if _TAB_RE.search(ref):
         return _channel_base(ref) + _TAB_RE.search(ref).group(0)
     return _channel_base(ref) + "/videos"
@@ -75,57 +79,107 @@ def url_kind(url: str) -> str:
     return "playlist" if "list=" in url else "channel"
 
 
-def playlists_url(ref: str) -> str:
-    """Point whatever the user typed at that creator's playlists tab.
+def is_index(url: str) -> bool:
+    return url.endswith(INDEX_TABS)
 
-    /videos, /playlists, a bare handle and a full channel URL all name the
-    same channel, so all four land on the same tab.
+
+def live_playlist_id(channel_id: str):
+    """YouTube's own playlist of a channel's past streams.
+
+    Every channel has a family of hidden playlists derived from its UC... id;
+    UULV... is the one holding its live broadcasts, the same list the Live tab
+    shows. Tracking that id makes Live a playlist like any other, and keeps it
+    from colliding with the channel, which the /streams tab would share an id
+    with.
     """
-    return _channel_base(ref) + "/playlists"
+    if channel_id and channel_id.startswith("UC"):
+        return "UULV" + channel_id[2:]
+    return None
 
 
-def list_playlists(cfg: dict, url: str, timeout=None):
-    """Flat-list a channel's playlists tab. Returns (owner, [playlists]).
-
-    The tab yields playlist entries, not videos: each carries a PL... id and a
-    title but no video count, because counting would mean opening every one.
-
-    `timeout` is for callers that cannot wait forever -- the web UI browses
-    with a request thread held open, where a wedged yt-dlp would hang the tab.
-    """
-    cmd = base_cmd(cfg) + ["--flat-playlist", "--dump-json", "--ignore-errors", url]
+def _flat(cfg, url, timeout=None, end=None):
+    """One flat listing of a tab: (entries, stderr). A missing tab is empty."""
+    cmd = base_cmd(cfg) + ["--flat-playlist", "--dump-json", "--ignore-errors"]
+    if end:
+        cmd += ["--playlist-end", str(int(end))]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd + [url], capture_output=True, text=True,
+                              timeout=timeout)
     except subprocess.TimeoutExpired:
         raise YtdlpError(f"timed out after {timeout}s listing {url}")
-    owner, seen, found = None, set(), []
+    entries = []
     for line in proc.stdout.splitlines():
         line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            e = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        pid = e.get("id") or _list_id(e.get("url") or "")
-        if not pid or not _PLAYLIST_ID_RE.match(pid) or pid in seen:
-            continue
-        seen.add(pid)
-        # On this tab the per-entry channel/uploader keys read "View full
-        # playlist"; the owning channel is on the playlist_* keys instead.
-        if owner is None:
-            owner = (e.get("playlist_channel") or e.get("playlist_uploader")
-                     or (e.get("playlist_title") or "").replace(" - Playlists", "")
-                     or None)
-        found.append({
-            "id": pid,
-            "title": e.get("title") or pid,
-            "url": e.get("url") or f"https://www.youtube.com/playlist?list={pid}",
-        })
+        if line.startswith("{"):
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return entries, proc.stderr or ""
+
+
+# What Browse offers, in the order it offers it: a course is the most
+# deliberate lesson series a creator publishes, so it comes first.
+SECTIONS = ("course", "live", "playlist")
+
+
+def browse(cfg: dict, ref: str, timeout=None):
+    """Everything a creator has that can be tracked as a playlist.
+
+    Returns (owner, [items]); each item carries a section -- course, live or
+    playlist. The Courses and Playlists tabs yield playlist entries (a PL...
+    id and a title, no video count, because counting would mean opening every
+    one). The Live tab yields videos, so it is offered as the one playlist
+    that holds them all. A channel without one of the tabs simply has nothing
+    in that section.
+
+    The three tabs are listed side by side, so browsing costs about as long as
+    the slowest of them rather than all three. `timeout` is for callers that
+    cannot wait forever -- the web UI browses with a request thread held open,
+    where a wedged yt-dlp would hang the tab.
+    """
+    base = _channel_base(ref)
+    jobs = {"course": (base + "/courses", None), "playlist": (base + "/playlists", None),
+            "live": (base + "/streams", 1)}
+    with ThreadPoolExecutor(len(jobs)) as pool:
+        futs = {k: pool.submit(_flat, cfg, url, timeout, end)
+                for k, (url, end) in jobs.items()}
+        got = {k: f.result() for k, f in futs.items()}
+
+    owner = channel_id = None
+    for entries, _ in got.values():
+        for e in entries:
+            # On these tabs the per-entry channel/uploader keys read "View full
+            # playlist"; the owning channel is on the playlist_* keys instead.
+            owner = owner or (e.get("playlist_channel") or e.get("playlist_uploader")
+                              or (e.get("playlist_title") or "").rsplit(" - ", 1)[0]
+                              or None)
+            channel_id = channel_id or e.get("playlist_channel_id")
+            if not channel_id and (e.get("playlist_id") or "").startswith("UC"):
+                channel_id = e["playlist_id"]
+
+    seen, found = set(), []
+    for section in ("course", "playlist"):
+        for e in got[section][0]:
+            pid = e.get("id") or _list_id(e.get("url") or "")
+            # A course is usually on the Playlists tab as well; it is shown
+            # once, as the course it is.
+            if not pid or not _PLAYLIST_ID_RE.match(pid) or pid in seen:
+                continue
+            seen.add(pid)
+            found.append({
+                "id": pid, "section": section, "title": e.get("title") or pid,
+                "url": e.get("url") or f"https://www.youtube.com/playlist?list={pid}",
+            })
+    live = live_playlist_id(channel_id)
+    if live and any(_ID_RE.match(e.get("id") or "") for e in got["live"][0]):
+        found.append({"id": live, "section": "live", "title": "Live streams",
+                      "url": f"https://www.youtube.com/playlist?list={live}"})
     if not found:
-        raise YtdlpError(
-            f"no playlists found at {url}\n{(proc.stderr or '').strip()[:800]}"
-        )
+        why = got["playlist"][1].strip()[:800]
+        raise YtdlpError(f"no courses, live streams or playlists found at {base}"
+                         + (f"\n{why}" if why else ""))
+    found.sort(key=lambda it: SECTIONS.index(it["section"]))
     return owner, found
 
 
@@ -165,24 +219,36 @@ def sync_source(cfg: dict, url: str, limit=None):
             # for a playlist, playlist_channel_id is the *owning channel* --
             # keying a playlist by it merges it into that channel.
             if kind == "playlist":
+                pid = e.get("playlist_id") or _list_id(url)
                 meta = {
                     "kind": "playlist",
-                    "source_id": e.get("playlist_id") or _list_id(url),
+                    "source_id": pid,
                     "name": e.get("playlist_title") or e.get("playlist"),
                     "owner": (e.get("playlist_channel") or e.get("playlist_uploader")
                               or e.get("channel")),
                     "handle": _handle_from(e),
+                    # The channel it hangs under in the library. A live
+                    # playlist names it in its own id, should the listing not.
+                    "channel_id": (e.get("playlist_channel_id")
+                                   or ("UC" + pid[4:] if (pid or "").startswith("UULV")
+                                       else None)),
+                    "section": "live" if (pid or "").startswith("UULV") else None,
                 }
             else:
+                cid = (e.get("channel_id") or e.get("playlist_channel_id")
+                       or e.get("playlist_id"))
+                name = (e.get("channel") or e.get("playlist_channel")
+                        or e.get("playlist_uploader") or e.get("uploader"))
                 meta = {
-                    "kind": "channel",
-                    "source_id": (e.get("channel_id") or e.get("playlist_channel_id")
-                                  or e.get("playlist_id")),
-                    "name": (e.get("channel") or e.get("playlist_channel")
-                             or e.get("playlist_uploader") or e.get("uploader")),
-                    "owner": None,
-                    "handle": _handle_from(e),
+                    "kind": "channel", "source_id": cid, "name": name,
+                    "owner": None, "handle": _handle_from(e),
+                    "channel_id": cid, "section": None,
                 }
+                if url.endswith("/streams") and live_playlist_id(cid):
+                    # The Live tab shares the channel's id; filed under it, it
+                    # would overwrite the channel. It is the live playlist.
+                    meta.update(kind="playlist", source_id=live_playlist_id(cid),
+                                name="Live streams", owner=name, section="live")
         date = _fmt_date(e.get("upload_date"))
         entries.append({
             "id": vid,

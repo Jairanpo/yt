@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS sources (
     handle      TEXT,               -- @handle for channels
     name        TEXT,
     owner       TEXT,               -- for playlists: the channel that owns it
+    channel_id  TEXT,               -- the UC... id it hangs under; a channel's own
+    section     TEXT,               -- playlists: 'course' | 'live' | NULL (plain)
     url         TEXT NOT NULL,
     added_at    INTEGER NOT NULL,
     last_sync   INTEGER
@@ -196,6 +198,17 @@ def _add_missing_columns(conn) -> None:
                 f"ALTER TABLE videos ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
     if "left_source" not in have:
         conn.execute("ALTER TABLE videos ADD COLUMN left_source TEXT")
+    have_src = {r[1] for r in conn.execute("PRAGMA table_info(sources)")}
+    for col in ("channel_id", "section"):
+        if col not in have_src:
+            conn.execute(f"ALTER TABLE sources ADD COLUMN {col} TEXT")
+    # A channel is its own root. A playlist learns its channel on its next
+    # sync; until then the library matches it up by the creator's name.
+    conn.execute("UPDATE sources SET channel_id = id "
+                 "WHERE kind = 'channel' AND channel_id IS NULL")
+    conn.execute("UPDATE sources SET section = 'live', channel_id = "
+                 "COALESCE(channel_id, 'UC' || substr(id, 5)) "
+                 "WHERE id LIKE 'UULV%' AND section IS NULL")
     if "unavailable" not in have:
         # A pre-existing catalog stored these with the id standing in for the
         # missing title. Name them for what they are on the way through, and
@@ -243,22 +256,27 @@ def _repair_playlist_ids(conn) -> None:
 # --- sources --------------------------------------------------------------
 
 def upsert_source(conn, sid, url, kind="channel", name=None, handle=None,
-                  owner=None) -> None:
+                  owner=None, channel_id=None, section=None) -> None:
     # YouTube pads some of these with stray whitespace ("Chienowa Japanese "),
     # which then shows up as a group label of its own next to the trimmed one.
     name, handle, owner = (
         (v.strip() or None) if isinstance(v, str) else v
         for v in (name, handle, owner))
     conn.execute(
-        """INSERT INTO sources (id, kind, handle, name, owner, url, added_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO sources (id, kind, handle, name, owner, url, added_at,
+                                  channel_id, section)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                kind   = excluded.kind,
                name   = COALESCE(excluded.name, sources.name),
                handle = COALESCE(excluded.handle, sources.handle),
                owner  = COALESCE(excluded.owner, sources.owner),
-               url    = excluded.url""",
-        (sid, kind, handle, name, owner, url, now()))
+               url    = excluded.url,
+               channel_id = COALESCE(excluded.channel_id, sources.channel_id),
+               -- Only Browse knows a playlist is a course; a later sync, which
+               -- cannot tell, must not forget it.
+               section    = COALESCE(excluded.section, sources.section)""",
+        (sid, kind, handle, name, owner, url, now(), channel_id, section))
     conn.commit()
 
 
@@ -288,6 +306,70 @@ def sources(conn, kind=None) -> list:
     sql += (" ORDER BY s.kind, (creator IS NULL), creator COLLATE NOCASE,"
             " COALESCE(s.name, s.url) COLLATE NOCASE")
     return conn.execute(sql, args).fetchall()
+
+
+def mark_courses(conn, ids) -> None:
+    """File tracked playlists Browse just found on a Courses tab as courses.
+
+    A playlist added by id cannot know it is one; the next browse puts it
+    right, so it moves up among its creator's courses.
+    """
+    ids = list(ids)
+    if ids:
+        conn.execute(
+            f"UPDATE sources SET section = 'course' WHERE section IS NULL "
+            f"AND kind = 'playlist' AND id IN ({','.join('?' * len(ids))})", ids)
+        conn.commit()
+
+
+# Within a creator: the channel itself, then courses, live, plain playlists.
+_SECTION_RANK = {"course": 1, "live": 2, None: 3}
+
+
+def by_creator(rows) -> list:
+    """Group sources under the creator they belong to, channel as the root.
+
+    Returns [{"key", "creator", "handle", "channel", "items"}], creators A-Z
+    with unknown last. `channel` is the channel's own row when you track it;
+    `items` are that creator's courses, live streams and playlists, in that
+    order. A playlist is tied to its channel by id; one synced before ids were
+    kept falls back to matching the creator's name or handle.
+    """
+    groups, alias = {}, {}
+
+    def group_for(key, creator, handle):
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"key": key, "creator": creator, "handle": handle,
+                               "channel": None, "items": []}
+        for name in (creator, handle):
+            if name:
+                alias.setdefault(name.strip().lower(), g)
+        g["creator"] = g["creator"] or creator
+        g["handle"] = g["handle"] or handle
+        return g
+
+    rows = list(rows)
+    for r in rows:
+        if r["kind"] == "channel":
+            group_for(r["id"], r["creator"], r["handle"])["channel"] = r
+    for r in rows:
+        if r["kind"] == "channel":
+            continue
+        cid = r["channel_id"]
+        g = groups.get(cid) if cid else None
+        if g is None:
+            g = next((alias[n.strip().lower()] for n in (r["creator"], r["handle"])
+                      if n and n.strip().lower() in alias), None)
+        if g is None:
+            g = group_for(cid or "name:" + (r["creator"] or "").strip().lower(),
+                          r["creator"], r["handle"])
+        g["items"].append(r)
+    for g in groups.values():
+        g["items"].sort(key=lambda r: (_SECTION_RANK.get(r["section"], 3),
+                                       (r["name"] or r["url"]).lower()))
+    return sorted(groups.values(),
+                  key=lambda g: (g["creator"] is None, (g["creator"] or "").lower()))
 
 
 def find_source(conn, needle: str):

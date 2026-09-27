@@ -184,6 +184,9 @@ PAGE = r"""<!doctype html>
   .sheet .picks input { margin-top:3px; }
   .sheet .picks .tag { color:var(--dim); font-size:11.5px; flex:0 0 auto;
                        margin-top:2px; }
+  .sheet .picks .sec { color:var(--dim); font-size:11.5px; text-transform:uppercase;
+                       letter-spacing:.06em; padding:10px 2px 2px; }
+  .sheet .picks .sec:first-child { padding-top:4px; }
   .sheet .bar2 { display:flex; gap:6px; align-items:center; margin-top:12px; }
   .sheet .bar2 .grow { flex:1; }
   .sheet .link { border:0; background:none; color:var(--accent); font:inherit;
@@ -269,7 +272,7 @@ PAGE = r"""<!doctype html>
              spellcheck="false">
       <button class="act primary" id="sadd">Add</button></div>
     <div class="bar2">
-      <span class="count grow">…or see what playlists a creator has:</span>
+      <span class="count grow">…or see a creator's courses, live and playlists:</span>
       <button class="link" id="sbrowse">Browse →</button></div>
   </div>
   <div id="spick" hidden>
@@ -352,24 +355,29 @@ async function refresh(opts) {
   renderJobs(d.jobs);
 }
 
+// One mark per kind of source, the same ones `yt sources` prints.
+const GLYPHS = {channel:"▸", course:"◆", live:"●", playlist:"▤"};
+const glyph = s => GLYPHS[s.kind === "channel" ? "channel" : s.section || "playlist"];
+
 function buildPicker(sources, colls) {
   const sel = $("#src");
   const want = state.source ? "s:" + state.source
              : state.collection ? "c:" + state.collection : "";
   // Rebuild the options only when the set actually changes, so an open
   // dropdown survives the 1.2s job-polling refreshes.
-  const key = JSON.stringify([sources.map(s => [s.id, s.creator, s.have, s.total]),
+  const key = JSON.stringify([sources.map(s => [s.id, s.group, s.section, s.creator,
+                                                 s.have, s.total]),
                               colls.map(c => [c.id, c.have, c.total])]);
   if (key !== pickerKey) {
     pickerKey = key;
     sel.innerHTML = '<option value="">Everything</option>';
-    const group = (label, items, prefix) => {
+    const group = (label, items, prefix, text) => {
       if (!items.length) return;
       const g = document.createElement("optgroup"); g.label = label;
       for (const it of items) {
         const o = document.createElement("option");
         o.value = prefix + it.id;
-        o.textContent = `${it.name} (${it.have}/${it.total})`;
+        o.textContent = `${text(it)} (${it.have}/${it.total})`;
         // Hovering a generic title still answers "whose?". A channel is its
         // own creator, so saying so twice would be noise.
         if (it.creator && it.creator !== it.name)
@@ -378,21 +386,21 @@ function buildPicker(sources, colls) {
       }
       sel.appendChild(g);
     };
-    group("Channels", sources.filter(s => s.kind === "channel"), "s:");
-    // "Lesson 1", "JLPT N5", "Tutorials" -- playlist titles repeat across
-    // creators, so each creator gets a group of their own rather than one
-    // flat list where two identical names sit side by side. The server hands
-    // them over already grouped by creator, unknown last, so insertion order
-    // is the order to show.
+    // The creator is the root: one group each, their channel on top and then
+    // their courses, live streams and playlists. "Lesson 1" and "Tutorials"
+    // repeat across creators, and under its creator the name is never
+    // ambiguous. The server hands them over already grouped and ordered, so
+    // insertion order is the order to show.
     const byCreator = new Map();
-    for (const p of sources.filter(s => s.kind === "playlist")) {
-      const who = p.creator || "unknown creator";
-      if (!byCreator.has(who)) byCreator.set(who, []);
-      byCreator.get(who).push(p);
+    for (const s of sources) {
+      if (!byCreator.has(s.group)) byCreator.set(s.group, []);
+      byCreator.get(s.group).push(s);
     }
-    for (const [who, items] of byCreator)
-      group(`Playlists · ${who}`, items, "s:");
-    group("Collections", colls, "c:");
+    for (const items of byCreator.values())
+      group(items[0].creator || "unknown creator", items, "s:",
+            it => it.kind === "channel" ? `${glyph(it)} All videos`
+                                        : `${glyph(it)} ${it.name}`);
+    group("Collections", colls, "c:", it => it.name);
   }
   paintWho(sources, colls);
   // The picker always shows the view you are in, however you got here -- a
@@ -418,9 +426,9 @@ function paintWho(sources, colls) {
   const src = state.source && sources.find(s => s.id === state.source);
   let text = "";
   if (src && src.kind === "playlist")
-    text = "▤ " + (src.creator || "unknown creator");
+    text = glyph(src) + " " + (src.creator || "unknown creator");
   else if (src)
-    text = "▸ " + (src.handle || src.creator || src.name);
+    text = glyph(src) + " " + (src.handle || src.creator || src.name);
   else if (state.collection)
     text = "yours";
   el.textContent = text;
@@ -824,14 +832,27 @@ function pickMode(creator, playlists) {
   $("#stitle").textContent = creator;
   const n = playlists.filter(p => !p.tracked).length;
   $("#spickwho").textContent =
-    `${playlists.length} playlists · ${n} not tracked yet`;
+    `${playlists.length} to pick from · ${n} not tracked yet`;
   const list = $("#spicks");
   list.innerHTML = "";
+  // Courses, live, playlists: the server sends them in that order, so a
+  // heading goes in wherever the section changes.
+  const heads = {course:"Courses", live:"Live", playlist:"Playlists"};
+  let section = null;
   for (const pl of playlists) {
+    if (pl.section !== section) {
+      section = pl.section;
+      const h = document.createElement("div");
+      h.className = "sec";
+      const count = playlists.filter(p => p.section === section).length;
+      h.textContent = `${GLYPHS[section]} ${heads[section]} · ${count}`;
+      list.appendChild(h);
+    }
     const lab = document.createElement("label");
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.value = pl.id;
+    cb.dataset.section = pl.section;
     // One you already track is shown, but not on offer: re-adding it would
     // just be a sync, and the point of this list is what you are missing.
     cb.disabled = pl.tracked;
@@ -852,7 +873,7 @@ function pickMode(creator, playlists) {
   paintPickCount();
 }
 const picked = () => [...$("#spicks").querySelectorAll("input:checked")]
-                       .map(cb => cb.value);
+                       .map(cb => ({ref: cb.value, section: cb.dataset.section}));
 function paintPickCount() {
   const n = picked().length;
   const btn = $("#spickadd");
@@ -894,7 +915,7 @@ async function browseSource() {
   const creator = $("#snew").value.trim();
   if (!creator) { srcError("paste a channel handle (@name) or a channel URL"); return; }
   const btn = $("#sbrowse"), label = btn.textContent;
-  // Listing a playlists tab is a few seconds of yt-dlp, so say that plainly
+  // Listing a creator's tabs is a few seconds of yt-dlp, so say that plainly
   // rather than leaving a dead button.
   btn.disabled = true;
   btn.textContent = "listing…";

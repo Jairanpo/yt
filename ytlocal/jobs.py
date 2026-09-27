@@ -138,18 +138,18 @@ class Cataloguer(_Queue):
         self.cfg = cfg
         super().__init__(1, "catalog")
 
-    def enqueue(self, ref, limit=None):
+    def enqueue(self, ref, limit=None, section=None):
         ref = ref.strip()
         # Keyed on what was asked for, so double-clicking Add joins the job
         # already running rather than starting a second pass over it.
         job, fresh = self._claim(f"src:{ref.lower()}", ref, "source")
         if fresh:
-            self.q.put((job, ref, limit))
+            self.q.put((job, ref, limit, section))
         return job
 
     def _worker(self):
         while True:
-            job, ref, limit = self.q.get()
+            job, ref, limit, section = self.q.get()
             conn = None
             try:
                 job.state, job.detail = "running", "resolving…"
@@ -160,7 +160,8 @@ class Cataloguer(_Queue):
                 conn = db.connect()
                 db.upsert_source(conn, sid, url, meta.get("kind") or ytdlp.url_kind(url),
                                  meta.get("name"), meta.get("handle"),
-                                 meta.get("owner"))
+                                 meta.get("owner"), meta.get("channel_id"),
+                                 section or meta.get("section"))
                 new, total, _ = db.upsert_videos(conn, sid, entries,
                                                  prune=limit is None)
                 db.mark_synced(conn, sid)

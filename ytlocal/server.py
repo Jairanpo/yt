@@ -50,7 +50,7 @@ def clean_source_ref(raw) -> str:
     """What the Add box accepts: a handle, a bare id, or a YouTube URL."""
     ref = _check_yt_ref(raw, "paste a channel handle (@name), a channel URL, "
                              "a playlist URL or a PL… id")
-    if ytdlp.source_url(ref).endswith("/playlists"):
+    if ytdlp.is_index(ytdlp.source_url(ref)):
         # The tab lists playlists, not videos, so syncing it would find
         # nothing. Browsing it is the thing to do instead, and this page can.
         raise ValueError("that is a creator's playlist index, not one source — "
@@ -59,9 +59,9 @@ def clean_source_ref(raw) -> str:
 
 
 def clean_creator_ref(raw) -> str:
-    """What Browse accepts: a creator, whose playlists tab we can then list."""
+    """What Browse accepts: a creator, whose tabs we can then list."""
     ref = _check_yt_ref(raw, "paste a channel handle (@name) or a channel URL "
-                             "to see what playlists it has")
+                             "to see its courses, live streams and playlists")
     if "list=" in ref or ref.startswith(("PL", "OLAK", "UU", "FL", "RD")):
         raise ValueError("that is one playlist, not a creator — Add tracks it "
                          "directly")
@@ -204,14 +204,16 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     return self._fail(400, str(exc))
                 try:
-                    owner, found = ytdlp.list_playlists(
-                        self.server.cat.cfg, ytdlp.playlists_url(ref), timeout=180)
+                    owner, found = ytdlp.browse(self.server.cat.cfg, ref, timeout=180)
                 except ytdlp.YtdlpError as exc:
                     return self._fail(502, str(exc))
+                db.mark_courses(self.conn, (pl["id"] for pl in found
+                                             if pl["section"] == "course"))
                 tracked = {r["id"] for r in db.sources(self.conn, "playlist")}
                 return self._json({
                     "creator": owner or ref,
                     "playlists": [{"id": pl["id"], "title": pl["title"],
+                                   "section": pl["section"],
                                    "tracked": pl["id"] in tracked}
                                   for pl in found],
                 })
@@ -225,6 +227,8 @@ class Handler(BaseHTTPRequestHandler):
                 # round-trips, so it goes on the queue and reports itself
                 # through the same job cards a download uses. `refs` is the
                 # batch a browse produces; the queue runs them one at a time.
+                # A browsed pick arrives as {ref, section}: only Browse can
+                # tell a course from any other playlist.
                 body = self._body()
                 raw = body.get("refs")
                 if raw is None:
@@ -233,11 +237,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._fail(400, "refs must be a list")
                 if not 1 <= len(raw) <= 50:
                     return self._fail(400, "pick between 1 and 50 at a time")
+                picks = [r if isinstance(r, dict) else {"ref": r} for r in raw]
                 try:
-                    refs = [clean_source_ref(r) for r in raw]
+                    refs = [(clean_source_ref(r.get("ref")),
+                             r.get("section") if r.get("section") == "course" else None)
+                            for r in picks]
                 except ValueError as exc:
                     return self._fail(400, str(exc))
-                jobs = [self.server.cat.enqueue(r).as_dict() for r in refs]
+                jobs = [self.server.cat.enqueue(r, section=sec).as_dict()
+                        for r, sec in refs]
                 return self._json({"ok": True, "job": jobs[0], "jobs": jobs})
             if url.path == "/api/collections":
                 body = self._body()
@@ -301,15 +309,18 @@ class Handler(BaseHTTPRequestHandler):
             offset=int(one("offset", "0")),
             sort=sort,
         )
-        # creator is who the source belongs to -- a channel is its own, a
-        # playlist's is the channel that owns it. The picker groups on it,
-        # because playlist titles alone repeat across creators.
+        # Sources arrive grouped under their creator, channel first, then its
+        # courses, live streams and playlists. `group` names the creator a
+        # source hangs under, so the picker can nest them without guessing --
+        # playlist titles alone repeat across creators.
         srcs = [
-            {"id": s["id"], "kind": s["kind"],
+            {"id": s["id"], "kind": s["kind"], "section": s["section"],
              "name": s["name"] or s["handle"] or s["url"],
-             "creator": s["creator"], "handle": s["handle"],
-             "owner": s["owner"], "total": s["n_total"], "have": s["n_have"]}
-            for s in db.sources(self.conn)
+             "creator": g["creator"] or s["creator"], "handle": s["handle"],
+             "group": g["key"], "owner": s["owner"],
+             "total": s["n_total"], "have": s["n_have"]}
+            for g in db.by_creator(db.sources(self.conn))
+            for s in ([g["channel"]] if g["channel"] else []) + g["items"]
         ]
         colls = [
             {"id": c["id"], "name": c["name"], "total": c["n_total"],

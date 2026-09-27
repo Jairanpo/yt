@@ -105,20 +105,25 @@ def _resolve_or_die(conn, needle, source=None, collection=None):
 
 # --- sources --------------------------------------------------------------
 
-def add_source(cfg, conn, ref, limit=None, quiet=False):
-    """Catalog one channel or playlist. Returns its display name."""
+def add_source(cfg, conn, ref, limit=None, quiet=False, section=None):
+    """Catalog one channel or playlist. Returns its display name.
+
+    `section` is what Browse found it as ("course"); a sync cannot tell.
+    """
     url = ytdlp.source_url(ref)
     kind = ytdlp.url_kind(url)
     if not quiet:
         out(f"resolving {C['acc']}{url}{C['r']} …")
     meta, entries = ytdlp.sync_source(cfg, url, limit=limit)
     sid = meta["source_id"]
-    db.upsert_source(conn, sid, url, meta.get("kind", kind), meta.get("name"),
-                     meta.get("handle"), meta.get("owner"))
+    kind = meta.get("kind", kind)
+    db.upsert_source(conn, sid, url, kind, meta.get("name"),
+                     meta.get("handle"), meta.get("owner"),
+                     meta.get("channel_id"), section or meta.get("section"))
     new, total, _ = db.upsert_videos(conn, sid, entries, prune=limit is None)
     db.mark_synced(conn, sid)
     name = meta.get("name") or meta.get("handle") or sid
-    label = "playlist" if kind == "playlist" else "channel"
+    label = (section or meta.get("section") or kind).replace("live", "live streams")
     owner = f" {C['dim']}({meta['owner']}){C['r']}" if meta.get("owner") else ""
     out(f"{C['ok']}added{C['r']} {label} {C['b']}{name}{C['r']}{owner} — "
         f"{total} videos catalogued ({new} new). Nothing downloaded yet.")
@@ -131,7 +136,7 @@ def add_source(cfg, conn, ref, limit=None, quiet=False):
 
 def cmd_add(args, cfg, conn):
     url = ytdlp.source_url(args.source)
-    if url.endswith("/playlists"):
+    if ytdlp.is_index(url):
         # That tab lists playlists, not videos; syncing it would find nothing.
         die(f"{args.source} is a creator's playlist index, not a single source.\n"
             f"       pick from it with:  yt playlists {args.source}")
@@ -159,13 +164,14 @@ def cmd_sync(args, cfg, conn):
             out(f"{C['err']}✗{C['r']} {name}: {exc}")
             continue
         db.upsert_source(conn, src["id"], src["url"], src["kind"], meta.get("name"),
-                         meta.get("handle"), meta.get("owner"))
+                         meta.get("handle"), meta.get("owner"),
+                         meta.get("channel_id"), meta.get("section"))
         # Pruning drops videos removed from a playlist; only valid on a full pass.
         new, total, _dropped = db.upsert_videos(conn, src["id"], entries,
                                                 prune=args.limit is None)
         db.mark_synced(conn, src["id"])
         grand_new += new
-        tag = "▤" if src["kind"] == "playlist" else "▸"
+        tag = glyph(src)
         flag = f"{C['acc']}+{new} new{C['r']}" if new else f"{C['dim']}no change{C['r']}"
         out(f"{C['ok']}✓{C['r']} {tag} {name:<32.32} {total:>5} catalogued  {flag}")
         grand_gone += sum(1 for e in entries if e.get("unavailable"))
@@ -243,37 +249,37 @@ def _report_orphans(args, conn, scope):
     out(f"{C['ok']}tidied{C['r']} — {len(drop)} catalog entries and {files} file(s) gone")
 
 
+# One mark per kind of source, the same everywhere a source is listed.
+GLYPHS = {"channel": "▸", "course": "◆", "live": "●", "playlist": "▤"}
+SECTION_NAMES = {"course": "courses", "live": "live", "playlist": "playlists"}
+
+
+def glyph(row):
+    return GLYPHS["channel" if row["kind"] == "channel" else row["section"] or "playlist"]
+
+
 def cmd_sources(args, cfg, conn):
     kind = args.kind if hasattr(args, "kind") else None
     rows = db.sources(conn, kind)
     if not rows:
         out("nothing tracked. add one:  yt add @channel   or   yt add <playlist url>")
         return
-    channels = [r for r in rows if r["kind"] == "channel"]
-    for s in channels:
-        name = s["name"] or s["handle"] or s["url"]
-        out(f"{C['dim']}▸ channel{C['r']} {C['b']}{name:<34.34}{C['r']} "
-            f"{s['n_have']:>4}/{s['n_total']:<5} on disk  "
-            f"{C['dim']}{s['handle'] or ''}{C['r']}")
-    # Two creators' playlists can carry the very same title, so the creator is
-    # the heading and the titles sit under it -- one look tells you whose
-    # "Lesson 1" you are about to list. db.sources already hands them over in
-    # creator order, so a single pass is enough.
-    seen = None
-    gap = bool(channels)          # no stray blank line when there are no channels
-    for s in [r for r in rows if r["kind"] == "playlist"]:
-        who = s["creator"] or "unknown creator"
-        if who != seen:
-            seen = who
-            handle = s["handle"] or ""
-            out(("\n" if gap else "")
-                + f"{C['dim']}▤ playlists ·{C['r']} {C['b']}{who}{C['r']}"
-                  f"  {C['dim']}{handle}{C['r']}")
-            gap = True
-        name = s["name"] or s["url"]
-        if len(name) > 40:
-            name = name[:39] + "…"
-        out(f"    {name:<40} {s['n_have']:>4}/{s['n_total']:<5} on disk")
+    # The creator is the root: their channel, then everything of theirs you
+    # track beneath it. Two creators' playlists can carry the very same title,
+    # and under its creator one look tells you whose "Lesson 1" it is.
+    for i, g in enumerate(db.by_creator(rows)):
+        who = g["creator"] or "unknown creator"
+        out(("\n" if i else "") + f"{C['b']}{who}{C['r']}"
+            f"  {C['dim']}{g['handle'] or ''}{C['r']}")
+        members = ([g["channel"]] if g["channel"] else []) + g["items"]
+        for s in members:
+            name = ("all videos" if s["kind"] == "channel"
+                    else s["name"] or s["url"])
+            if len(name) > 40:
+                name = name[:39] + "…"
+            out(f"  {C['dim']}{glyph(s)}{C['r']} {name:<40} "
+                f"{s['n_have']:>4}/{s['n_total']:<5} on disk")
+    out(f"\n{C['dim']}" + " · ".join(f"{g} {k}" for k, g in GLYPHS.items()) + C['r'])
 
 
 def cmd_playlists(args, cfg, conn):
@@ -284,17 +290,23 @@ def cmd_playlists(args, cfg, conn):
     if "list=" in args.creator or args.creator.startswith(("PL", "OLAK")):
         die(f"{args.creator} is one playlist, not a creator.\n"
             f"       track it with:  yt add {args.creator}")
-    url = ytdlp.playlists_url(args.creator)
-    out(f"resolving {C['acc']}{url}{C['r']} …")
-    owner, found = ytdlp.list_playlists(cfg, url)
+    out(f"resolving {C['acc']}{args.creator}{C['r']} — courses, live, playlists …")
+    owner, found = ytdlp.browse(cfg, args.creator)
+    db.mark_courses(conn, (pl["id"] for pl in found
+                                 if pl["section"] == "course"))
     tracked = {row["id"] for row in db.sources(conn, "playlist")}
     width = max(30, shutil.get_terminal_size((100, 24)).columns - 42)
 
-    out(f"\n{C['b']}{len(found)}{C['r']} playlists on "
-        f"{C['b']}{owner or args.creator}{C['r']}"
-        f"  {C['dim']}(▤ = already tracked){C['r']}\n")
+    out(f"\n{C['b']}{owner or args.creator}{C['r']}"
+        f"  {C['dim']}(✓ = already tracked){C['r']}")
+    section = None
     for i, pl in enumerate(found, 1):
-        mark = f"{C['ok']}▤{C['r']}" if pl["id"] in tracked else " "
+        if pl["section"] != section:
+            section = pl["section"]
+            count = sum(1 for p in found if p["section"] == section)
+            out(f"\n  {C['dim']}{GLYPHS[section]}{C['r']} "
+                f"{C['b']}{SECTION_NAMES[section]}{C['r']} {C['dim']}{count}{C['r']}")
+        mark = f"{C['ok']}✓{C['r']}" if pl["id"] in tracked else " "
         title = pl["title"]
         if len(title) > width:
             title = title[: width - 1] + "…"
@@ -307,7 +319,8 @@ def cmd_playlists(args, cfg, conn):
     for i, pl in enumerate(picked, 1):
         out(f"\n{C['dim']}[{i}/{len(picked)}]{C['r']} {pl['title']}")
         try:
-            add_source(cfg, conn, pl["id"], limit=args.limit, quiet=True)
+            add_source(cfg, conn, pl["id"], limit=args.limit, quiet=True,
+                       section=pl["section"] if pl["section"] != "playlist" else None)
         except ytdlp.YtdlpError as exc:
             # One bad playlist should not cost the others already chosen.
             out(f"{C['err']}skipped{C['r']} {pl['title']}: {exc}")
@@ -909,8 +922,9 @@ def build_parser():
             typical flow:
               yt add @3blue1brown              track a channel (metadata only)
               yt add <playlist url>            track a playlist, curated order kept
-              yt playlists @3blue1brown        list a creator's playlists, pick
-                                               the ones you want by number
+              yt playlists @3blue1brown        list a creator's courses, live
+                                               streams and playlists; pick the
+                                               ones you want by number
               yt list "linear algebra"         browse it in order
               yt list --sort oldest --save     remember an order for a view
               yt get "eigenvectors"            download one
@@ -944,9 +958,10 @@ def build_parser():
     pl = sub.add_parser("playlists", help="list tracked playlists, or a creator's",
                         description="No argument lists the playlists you track. "
                                     "Give a channel and it lists that creator's "
-                                    "playlists so you can pick ones to add.")
+                                    "courses, live streams and playlists so you "
+                                    "can pick ones to add.")
     pl.add_argument("creator", nargs="?",
-                    help="@handle or channel URL: list that creator's playlists")
+                    help="@handle or channel URL: list what that creator has")
     pl.add_argument("--add", metavar="PICKS",
                     help="add these by number without prompting: 1,3-5 or all")
     pl.add_argument("--limit", type=int, help="only catalog the newest N per playlist")

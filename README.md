@@ -205,9 +205,10 @@ dies — clean exit, crash, `kill -9` — so there is no stale pidfile to clean 
 and `yt serve --status` never lies about a server that isn't there.
 
 - **Search box** filters titles and descriptions as you type. The dropdown
-  groups everything you can narrow to: **Channels**, then **Playlists · <the
-  creator>** — one group per creator, because playlist titles like "Lesson 1"
-  or "JLPT N5" repeat across channels — and your **Collections**. Whichever
+  groups everything you can narrow to under the creator it belongs to — their
+  channel (**▸ All videos**) on top, then their ◆ courses, ● live streams and
+  ▤ playlists, because titles like "Lesson 1" or "JLPT N5" repeat across
+  channels — and your **Collections** last. Whichever
   view you are in, the creator stays on show next to the picker, since a
   collapsed dropdown shows the title alone. Picking a playlist or collection
   switches the grid into that list's own order and numbers each card.
@@ -220,8 +221,9 @@ and `yt serve --status` never lies about a server that isn't there.
   itself in the same cards a download uses, and drops you into the new view
   when it lands. YouTube links only.
   - **Browse →** in the same sheet does what
-    [`yt playlists <creator>`](#finding-a-creators-playlists) does in the
-    terminal: give it a creator and it lists every playlist they have, marks
+    [`yt playlists <creator>`](#finding-a-creators-playlists-courses-and-live-streams) does in the
+    terminal: give it a creator and it lists their courses, live streams and
+    playlists under a heading each, marks
     the ones you already track, and tracks the ones you tick. **all** / **none**
     for the whole list. Picks are catalogued one at a time, each with its own
     card; tick exactly one and the page lands in it when it finishes.
@@ -290,45 +292,69 @@ can belong to both without being duplicated:
 
 ```console
 $ yt sources
-▸ channel 3Blue1Brown                            1/151   on disk  @3blue1brown
+3Blue1Brown  @3blue1brown
+  ▸ all videos                                  1/151   on disk
+  ◆ Essence of linear algebra                   1/16    on disk
+  ● Live streams                                0/10    on disk
+  ▤ Lockdown math                               0/10    on disk
 
-▤ playlists · 3Blue1Brown  @3blue1brown
-    Essence of linear algebra                    1/16    on disk
-    Essence of calculus                          0/12    on disk
+freeCodeCamp.org  @freecodecamp
+  ◆ Back End Developer Learning Path            0/40    on disk
+
+▸ channel · ◆ course · ● live · ▤ playlist
 ```
 
-Channels come first, then playlists filed under the creator who made them —
-two channels can easily both have a "Chapter 1" or a "Tutorials", and the
-heading is what tells them apart. `yt channels` and `yt playlists` narrow that
+The creator is the root: their channel first, then their courses, live streams
+and playlists beneath it — two channels can easily both have a "Chapter 1" or a
+"Tutorials", and the heading is what tells them apart. A playlist hangs under
+its channel by the channel's id, so a creator whose channel you don't track
+still gets a heading of their own. `yt channels` and `yt playlists` narrow that
 list to one kind.
 
-### Finding a creator's playlists
+### Finding a creator's playlists, courses and live streams
 
 *In the web library this is **＋ source → Browse**; the terminal version is
 below.*
 
 You rarely know a playlist's URL by heart. Give `yt playlists` a channel and it
-lists what that creator has published, marking the ones you already track:
+lists what that creator has published — their **Courses** tab, their **Live**
+tab and their **Playlists** tab — marking the ones you already track:
 
 ```console
 $ yt playlists @3blue1brown
-resolving https://www.youtube.com/@3blue1brown/playlists …
+resolving @3blue1brown — courses, live, playlists …
 
-24 playlists on 3Blue1Brown  (▤ = already tracked)
+3Blue1Brown  (✓ = already tracked)
 
- 18   Neural networks                              PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
- 19   Essence of calculus                          PLZHQObOWTQDMsr9K-rj53DwVRMYO3t5Yr
- 20   Binary, Hanoi and Sierpinski                 PLZHQObOWTQDMRtm8h9bG9P06WINNoBnCR
- 21 ▤ Essence of linear algebra                    PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab
+  ◆ courses 4
+  1 ✓ Neural networks                               PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi
+  2   Differential equations                        PLZHQObOWTQDNPOjrT6KVlfJuKtYTftqH6
+  3   Essence of linear algebra                     PLZHQObOWTQDPD3MizzM2xVFitgF8hE_ab
+  4   Essence of calculus                           PLZHQObOWTQDMsr9K-rj53DwVRMYO3t5Yr
+
+  ● live 1
+  5   Live streams                                  UULVYO_jab_esuFRV4b17AJtAw
+
+  ▤ playlists 20
+  6   Optics puzzles                                PLZHQObOWTQDMKqfyUvG2kTlYt-QQ2x-ui
+  …
 
 add which? numbers like 1,3-5 · a = all · enter = none
-add: 19,20
+add: 4,5
 
 [1/2] Essence of calculus
-added playlist Essence of calculus (3Blue1Brown) — 12 videos catalogued (12 new). Nothing downloaded yet.
-[2/2] Binary, Hanoi and Sierpinski
-added playlist Binary, Hanoi and Sierpinski (3Blue1Brown) — 3 videos catalogued (3 new). Nothing downloaded yet.
+added course Essence of calculus (3Blue1Brown) — 12 videos catalogued (12 new). Nothing downloaded yet.
+[2/2] Live streams
+added live streams Live streams (3Blue1Brown) — 10 videos catalogued (10 new). Nothing downloaded yet.
 ```
+
+A course is a playlist the creator has promoted to their Courses tab, so it
+behaves like one — kept in the author's order — and is listed once, as a
+course, even when it is on the Playlists tab too. A playlist you tracked by id
+before is relabelled a course the next time you browse its creator. **Live**
+is every past stream the channel has broadcast, tracked as YouTube's own
+`UULV…` playlist of them; `yt add @creator/streams` tracks the same thing.
+A channel without one of these tabs simply has nothing under that heading.
 
 Nothing is tracked until you say so — a large channel can have dozens of
 playlists, and you almost never want all of them, so the prompt takes just the
@@ -489,7 +515,7 @@ $ yt sync
 143 new video(s) across 2 source(s).
 ```
 
-`▸` is a channel, `▤` a playlist. Add `--show-new` to print the new titles, or
+`▸` is a channel, `◆` a course, `●` live streams, `▤` a playlist. Add `--show-new` to print the new titles, or
 a name to sync just one source. Note that `sync` indexes the *whole* source —
 if you first used `yt add --limit 20`, the catalogue will grow past 20. That's
 intended; metadata is nearly free. A full sync also drops videos that were
@@ -606,9 +632,9 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `yt info <id\|phrase>` | Details and description. `--refresh` re-fetches from YouTube. |
 | `yt status` | Counts and disk use; also reconciles the catalog with what's on disk. |
 | `yt serve` | Toggle the web library on or off, in the background. `--status`, `--stop`, `--foreground`, `--install` / `--uninstall` (start at login), `-p PORT`, `--no-open`, `-v`. |
-| `yt sources` | List channels, then playlists grouped by the creator who owns them, with on-disk counts. `--kind channel\|playlist`. |
+| `yt sources` | List everything by creator: their channel, then courses, live streams and playlists, with on-disk counts. `--kind channel\|playlist`. |
 | `yt channels` / `yt playlists` | The same list, narrowed to one kind. |
-| `yt playlists <@handle\|url>` | List a creator's playlists and pick the ones to track by number. `--add 1,3-5\|all` skips the prompt. |
+| `yt playlists <@handle\|url>` | List a creator's courses, live streams and playlists and pick the ones to track by number. `--add 1,3-5\|all` skips the prompt. |
 | `yt forget <source>` | Stop tracking. Downloaded files and collections stay. `-y` skips the prompt. |
 | `yt config [--init]` | Show settings, or write a config file to edit. |
 | `yt block` | How to block youtube.com without breaking downloads. |
