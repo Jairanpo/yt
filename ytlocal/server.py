@@ -9,6 +9,7 @@ from pathlib import Path
 from ytlocal import config, db, ytdlp
 from ytlocal.jobs import Cataloguer, Downloader
 from ytlocal.ui import PAGE
+from ytlocal import toggl as tg
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 # A job card is either a download (keyed by video id) or a source being
@@ -109,13 +110,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         # The whole point is a sealed library: no outbound requests from the page.
-        # chrome-extension: is not a way out -- it only lets an extension you
-        # installed show its own packaged images, which is what the Toggl Track
-        # button needs to draw itself. The extension does its own talking to
-        # Toggl out of band; the page still reaches nothing but this server.
+        # The Toggl timer does not need an exception here -- the page asks this
+        # server to start it, and the server is what talks to Toggl.
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; "
-                         "img-src 'self' data: chrome-extension: moz-extension:; "
+                         "default-src 'self'; img-src 'self' data:; "
                          "media-src 'self'; style-src 'self' 'unsafe-inline'; "
                          "script-src 'self' 'unsafe-inline'")
         for k, v in (extra or {}).items():
@@ -140,6 +138,10 @@ class Handler(BaseHTTPRequestHandler):
         if not hasattr(self, "_conn"):
             self._conn = db.connect()
         return self._conn
+
+    @property
+    def cfg(self):
+        return self.server.cat.cfg
 
     def finish(self):
         try:
@@ -170,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
                     for c in db.collections_for(self.conn, vid)]})
             if path.startswith("/api/subs/"):
                 return self._sub_langs(path[len("/api/subs/"):])
+            if path == "/api/toggl/status":
+                return self._toggl_status()
             if path == "/api/jobs":
                 return self._json({"jobs": self._jobs()})
             if path.startswith("/thumb/"):
@@ -222,6 +226,32 @@ class Handler(BaseHTTPRequestHandler):
                                    "tracked": pl["id"] in tracked}
                                   for pl in found],
                 })
+            if url.path == "/api/toggl/start":
+                body = self._body()
+                row = db.get_video(self.conn, body.get("video") or "")
+                if not row:
+                    return self._fail(404, "unknown video")
+                chan = row["channel_name"] or row["channel_handle"] or "unknown"
+                m = db.toggl_map(self.conn).get(chan, {})
+                tags = [t.strip() for t in (m.get("tags") or "").split(",") if t.strip()]
+                try:
+                    entry, missing = tg.start(self.cfg, m.get("name") or chan,
+                                              m.get("project") or None, tags)
+                except tg.TogglError as exc:
+                    return self._fail(502, str(exc))
+                return self._json({"ok": True, "running": tg.as_json(entry),
+                                   "project_missing": m.get("project") if missing else None})
+            if url.path == "/api/toggl/stop":
+                body = self._body()
+                try:
+                    running = tg.current(self.cfg) if not body.get("id") else None
+                    eid = body.get("id") or (running or {}).get("id")
+                    if not eid:
+                        return self._json({"ok": True, "running": {}})
+                    tg.stop(self.cfg, eid, body.get("workspace"))
+                except tg.TogglError as exc:
+                    return self._fail(502, str(exc))
+                return self._json({"ok": True, "running": {}})
             if len(parts) == 3 and parts[0] == "api":
                 action, vid = parts[1], parts[2]
                 if not _ID_RE.match(vid):
@@ -382,6 +412,18 @@ class Handler(BaseHTTPRequestHandler):
             "toggl": db.toggl_map(self.conn),
             "toggl_channels": db.toggl_channels(self.conn),
         })
+
+    def _toggl_status(self):
+        """Whether the button should be there at all, and what is running."""
+        if not tg.configured(self.cfg):
+            return self._json({"configured": False, "running": {}})
+        try:
+            return self._json({"configured": True,
+                               "running": tg.as_json(tg.current(self.cfg))})
+        except tg.TogglError as exc:
+            # Configured but unreachable is worth saying out loud rather than
+            # quietly looking the same as "not set up".
+            return self._json({"configured": True, "running": {}, "error": str(exc)})
 
     def _action(self, action, vid):
         row = db.get_video(self.conn, vid)

@@ -144,13 +144,18 @@ PAGE = r"""<!doctype html>
   #pmeta .sub { color:#9b988f; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
-  /* Where the Toggl Track extension hangs its timer button, given the custom
-     integration in integrations/toggl.js. Nothing installed, nothing injected,
-     and :empty keeps the gap from showing. */
-  #ptoggl { display:flex; align-items:center; gap:8px; margin-top:10px; }
-  #ptoggl:empty { display:none; }
-  #ptoggl a, #ptoggl button { color:#e9e7e3; font:inherit; font-size:13px;
-                              text-decoration:none; }
+  /* The Toggl timer, when a token is configured. Without one the whole row
+     stays away rather than offering a button that cannot work. */
+  #ptoggl { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  #ptoggl[hidden] { display:none; }
+  #tgbtn { border:1px solid rgba(233,231,227,.35); background:transparent;
+           color:#e9e7e3; border-radius:6px; padding:6px 12px; font:inherit;
+           font-size:13px; cursor:pointer; }
+  #tgbtn:hover { border-color:var(--accent); color:var(--accent); }
+  #tgbtn.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #tgbtn:disabled { opacity:.55; cursor:default; }
+  #tgwhat { color:#9b988f; font-size:12.5px; overflow:hidden;
+            text-overflow:ellipsis; white-space:nowrap; }
   /* z-index matters: the button sits over the video's top-right corner, and
      without it the <video> swallows every click that lands on the glyph. */
   #pclose { position:absolute; top:10px; right:14px; z-index:2;
@@ -766,29 +771,71 @@ function open_(v) {
     markIfFinished(vid);
   }, 5000);
 }
-// The Toggl Track extension watches for its selector and builds a button
-// against whatever it finds. A brand new node each time is what tells it this
-// is a different video -- reusing one would leave the button pointing at the
-// last thing you watched. The page itself does nothing with these: they are
-// there to be read by an extension, or ignored entirely.
+// Tracking is per channel, not per video: one entry that says which creator
+// you spent the time on. The start itself is made by the server -- this only
+// ever calls localhost, which is what keeps the page sealed.
+let tgRunning = null, tgReady = false;
+
+async function togglPoll() {
+  try {
+    const d = await api("/api/toggl/status");
+    tgReady = d.configured;
+    tgRunning = d.running && d.running.id ? d.running : null;
+  } catch (e) { tgReady = false; }
+  paintToggl_();
+}
+
 function togglMount(v) {
   togglUnmount();
+  if (!tgReady) return;
   const m = state.toggl[v.channel] || {};
   const el = document.createElement("div");
   el.id = "ptoggl";
-  // Tracking is per channel, not per video: one entry that says which creator
-  // you spent the time on. A channel you never filled in still tracks as
-  // itself rather than as nothing.
-  el.dataset.description = m.name || v.channel || "";
+  el.innerHTML = '<button id="tgbtn"></button><span id="tgwhat"></span>';
+  el.dataset.videoId = v.id;
+  // What this click would file, spelled out before you click it.
+  el.dataset.label = m.name || v.channel || "";
   el.dataset.project = m.project || "";
   el.dataset.tags = m.tags || "";
-  el.dataset.channel = v.channel || "";
-  el.dataset.videoId = v.id;
   $("#pmeta").insertBefore(el, $("#pdesc"));
+  $("#tgbtn").onclick = togglClick;
+  paintToggl_();
 }
+
 function togglUnmount() {
   const el = $("#ptoggl");
   if (el) el.remove();
+}
+
+function paintToggl_() {
+  const el = $("#ptoggl");
+  if (!el) return;
+  el.hidden = !tgReady;
+  const btn = $("#tgbtn");
+  btn.textContent = tgRunning ? "■ Stop Toggl" : "▶ Start Toggl";
+  btn.classList.toggle("on", !!tgRunning);
+  $("#tgwhat").textContent = tgRunning
+    ? `tracking ${tgRunning.description || "—"}`
+    : [el.dataset.label, el.dataset.project, el.dataset.tags]
+        .filter(Boolean).join(" · ");
+}
+
+async function togglClick() {
+  const el = $("#ptoggl"), btn = $("#tgbtn");
+  btn.disabled = true;
+  try {
+    const r = tgRunning
+      ? await post("/api/toggl/stop", {id: tgRunning.id,
+                                       workspace: tgRunning.workspace_id})
+      : await post("/api/toggl/start", {video: el.dataset.videoId});
+    tgRunning = r.running && r.running.id ? r.running : null;
+    if (r.project_missing)
+      alert(`Started, but Toggl has no project called "${r.project_missing}" — ` +
+            `the entry has no project. Create it in Toggl, or fix the name in ` +
+            `the toggl sheet.`);
+  } catch (e) { alert(e.message); }
+  btn.disabled = false;
+  paintToggl_();
 }
 
 async function attachSubs(id, vid) {
@@ -848,7 +895,10 @@ function openToggl() {
   paintToggl();
   $("#tgmodal").classList.add("on");
 }
-function closeToggl() { $("#tgmodal").classList.remove("on"); refresh(); }
+function closeToggl() {
+  $("#tgmodal").classList.remove("on");
+  refresh(); togglPoll();
+}
 
 function paintToggl() {
   const box = $("#tgrows");
@@ -1251,6 +1301,7 @@ function restoreFromUrl() {
     $(id).setAttribute("aria-pressed", String(on));
 }
 restoreFromUrl();
+togglPoll();
 // Back and forward move between views rather than out of the library.
 addEventListener("popstate", () => { restoreFromUrl(); refresh(); });
 

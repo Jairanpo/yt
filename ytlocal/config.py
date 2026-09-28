@@ -34,12 +34,19 @@ DEFAULTS = {
     "ytdlp": "yt-dlp",
     # Extra args appended to every yt-dlp invocation (e.g. cookies, rate limit).
     "ytdlp_args": [],
+    # Toggl Track. A token turns the timer button on in the player; without one
+    # the button stays away and nothing here ever touches the network.
+    # Toggl -> Profile settings -> API token.
+    "toggl_token": None,
+    # Which workspace to file entries under. None means your default one.
+    "toggl_workspace": None,
 }
 
 _ENV_OVERRIDES = {
     "media_dir": "YTLOCAL_MEDIA",
     "port": "YTLOCAL_PORT",
     "ytdlp": "YTLOCAL_YTDLP",
+    "toggl_token": "YTLOCAL_TOGGL_TOKEN",
 }
 
 

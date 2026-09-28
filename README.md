@@ -271,39 +271,59 @@ and `yt serve --status` never lies about a server that isn't there.
 
 ## Toggl Track
 
-Time spent watching can go into [Toggl Track](https://toggl.com/track/) through
-its browser extension, tracked **per channel** — one entry that says which
-creator the hour went to, not one per video.
+Time spent watching can go into [Toggl Track](https://toggl.com/track/),
+tracked **per channel** — one entry that says which creator the hour went to,
+not one per video.
+
+### Point each channel somewhere
 
 Press **⏱ toggl** in the web library. Every creator the catalog knows gets a
-row with three fields:
+row with three fields, saved as you type:
 
 | Field | What it is |
 | --- | --- |
 | Name in Toggl | What the entry is called. Blank means the channel's own name. |
-| Project | The Toggl project it counts towards. It must already exist in Toggl under that exact name — Toggl will not create one, and an unknown name is quietly dropped. |
-| Tags | Comma separated, as Toggl takes them. |
+| Project | The Toggl project it counts towards. It must already exist in Toggl under that exact name — Toggl does not create projects on the fly, and an unknown name starts the timer without one (the page says so when it happens). |
+| Tags | Comma separated. Toggl takes these by name. |
 
-Fields save as you type. A channel with all three blank has no row at all and
-simply tracks as itself.
+A channel with all three blank has no row at all and tracks as itself.
 
-Then install the integration once, in the extension:
+### Give it a token
 
-1. Toggl Track extension → **Settings → Integrations → Development mode**
-2. **New integration**, named whatever you like
-3. Origin: `http://127.0.0.1:8420` (or whichever port you serve on)
-4. Paste in [`integrations/toggl.js`](integrations/toggl.js), save, and grant
-   the permission it asks for
+    yt config            # writes the default config if you have none
+    $EDITOR ~/.config/ytlocal/config.json
 
-A Toggl button then appears in the player while a video is open, carrying that
-channel's name, project and tags. It is a button you press — the timer does not
-start by itself.
+```json
+{
+  "toggl_token": "your-api-token",
+  "toggl_workspace": null
+}
+```
 
-**This does not unseal the library.** The extension's content script runs with
-the extension's own permissions and does its talking to Toggl out of band; the
-page still reaches nothing but this server. The only concession in the CSP is
-`img-src chrome-extension: moz-extension:`, which lets an extension you
-installed draw its own packaged icons and opens no network path.
+The token is on your Toggl **Profile settings** page, at the bottom.
+`toggl_workspace` can stay `null` — your default workspace is used.
+`YTLOCAL_TOGGL_TOKEN` overrides the config if you would rather not write it
+down.
+
+Restart `yt serve` and a **▶ Start Toggl** button appears in the player,
+showing what it is about to file. Press it again to stop. It is a button you
+press — the timer does not start by itself, so a video left playing in another
+tab never bills you for it.
+
+Without a token the button is not there at all, and nothing in the library
+touches the network.
+
+### This does not unseal the library
+
+The page still reaches nothing but this server: it asks `localhost` to start a
+timer, and the server is what knows the token and talks to Toggl. The CSP is
+unchanged.
+
+The browser extension is *not* how this works, and cannot be. Toggl's move to
+Manifest V3 removed custom integrations and development mode, because MV3 does
+not allow user-supplied scripts; Toggl has said they are working with Google
+and Mozilla on it, with no date. If that ever comes back, the mapping above is
+already the half that matters.
 
 ---
 
@@ -728,8 +748,11 @@ After that it displays in full, and a later approximation can't overwrite it.
 | `port` | `8420` | Used by `yt serve` unless `-p` overrides it. |
 | `player` | auto | mpv → vlc → xdg-open. |
 | `ytdlp_args` | `[]` | Appended to every call, e.g. `["--cookies-from-browser","firefox"]`. |
+| `toggl_token` | `null` | A [Toggl Track](#toggl-track) API token turns the timer button on in the player. Without one nothing here touches the network. |
+| `toggl_workspace` | `null` | Which workspace to file entries under. `null` means your default. |
 
-`YTLOCAL_MEDIA`, `YTLOCAL_PORT`, `YTLOCAL_DATA`, and `YTLOCAL_CONFIG` override
+`YTLOCAL_MEDIA`, `YTLOCAL_PORT`, `YTLOCAL_DATA`, `YTLOCAL_CONFIG`, and
+`YTLOCAL_TOGGL_TOKEN` override
 at the environment level — handy for running a throwaway second library.
 
 The catalog is plain SQLite at `~/.local/share/ytlocal/catalog.db`; query it
