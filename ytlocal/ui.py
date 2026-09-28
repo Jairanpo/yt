@@ -144,6 +144,13 @@ PAGE = r"""<!doctype html>
   #pmeta .sub { color:#9b988f; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
+  /* Where the Toggl Track extension hangs its timer button, given the custom
+     integration in integrations/toggl.js. Nothing installed, nothing injected,
+     and :empty keeps the gap from showing. */
+  #ptoggl { display:flex; align-items:center; gap:8px; margin-top:10px; }
+  #ptoggl:empty { display:none; }
+  #ptoggl a, #ptoggl button { color:#e9e7e3; font:inherit; font-size:13px;
+                              text-decoration:none; }
   /* z-index matters: the button sits over the video's top-right corner, and
      without it the <video> swallows every click that lands on the glyph. */
   #pclose { position:absolute; top:10px; right:14px; z-index:2;
@@ -194,6 +201,21 @@ PAGE = r"""<!doctype html>
                  font-size:12.5px; padding:2px 4px; cursor:pointer; }
   .sheet .link:hover { text-decoration:underline; }
   .sheet .count { color:var(--dim); font-size:12.5px; }
+  /* The Toggl sheet carries three fields a row, so it gets more room. */
+  .sheet .box.wide { width:min(680px,94vw); }
+  .tgrows { display:flex; flex-direction:column; gap:12px; padding:2px 2px 0;
+            max-height:min(58vh,440px); overflow-y:auto; }
+  .tgrow { display:grid; gap:6px;
+           grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .tgrow .ch { grid-column:1/-1; font-size:12.5px; color:var(--dim);
+               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tgrow input { background:var(--bg); color:var(--ink); min-width:0;
+                 border:1px solid var(--edge); border-radius:6px;
+                 padding:6px 8px; font:inherit; font-size:13px; }
+  .tgrow input:focus { outline:none; border-color:var(--accent); }
+  @media (max-width:560px) {
+    .tgrow { grid-template-columns:1fr; }
+  }
   #jobs { position:fixed; right:16px; bottom:16px; width:300px; z-index:40;
           display:flex; flex-direction:column; gap:8px; }
   .job { position:relative; background:var(--panel); border:1px solid var(--edge);
@@ -237,6 +259,8 @@ PAGE = r"""<!doctype html>
   <button class="chip" id="newsrc"
           title="Track a channel or playlist">＋ source</button>
   <button class="chip" id="newcoll" title="New collection">＋ collection</button>
+  <button class="chip" id="togglcfg"
+          title="How each channel shows up in Toggl Track">⏱ toggl</button>
   <div class="stats" id="stats"></div>
 </header>
 <main>
@@ -262,6 +286,19 @@ PAGE = r"""<!doctype html>
   <div id="mlist"></div>
   <div class="mk"><input id="mnew" placeholder="New collection…" autocomplete="off">
     <button class="act" id="madd">Create</button></div>
+</div></div>
+
+<div id="tgmodal" class="sheet"><div class="box wide">
+  <h3>Toggl Track</h3>
+  <div class="who hint">One row per channel: what to call it in Toggl, the
+    project it counts towards, and any tags. Leave a field blank and the
+    channel's own name stands in. Needs the custom integration from
+    <code>integrations/toggl.js</code> in the extension.</div>
+  <div class="tgrows" id="tgrows"></div>
+  <div class="bar2">
+    <span class="count grow" id="tgnote"></span>
+    <button class="act" id="tgdone">Done</button>
+  </div>
 </div></div>
 
 <div id="srcmodal" class="sheet"><div class="box">
@@ -302,7 +339,7 @@ PAGE = r"""<!doctype html>
 <script>
 const state = { q:"", source:"", collection:"", have:null, starred:false,
                 unwatched:false, hidden:false, videos:[], ordered:false, sources:[],
-                collections:[], sort:"default" };
+                collections:[], sort:"default", toggl:{}, togglChannels:[] };
 const $ = s => document.querySelector(s);
 const fmtDur = s => { if(!s) return ""; s=Math.round(s);
   const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60;
@@ -346,6 +383,8 @@ async function refresh(opts) {
   state.sources = d.sources;
   state.collections = d.collections;
   state.sort = d.sort;
+  state.toggl = d.toggl || {};
+  state.togglChannels = d.toggl_channels || [];
   buildPicker(d.sources, d.collections);
   buildSorts(d.sorts, d.sort);
   const s = d.stats;
@@ -715,6 +754,7 @@ function open_(v) {
   $("#psub").textContent = [v.channel, fmtDate(v), fmtDur(v.duration)]
                              .filter(Boolean).join(" · ");
   $("#pdesc").textContent = v.description || "";
+  togglMount(v);
   $("#player").classList.add("on");
   vid.currentTime = v.progress || 0;
   vid.play().catch(()=>{});
@@ -726,6 +766,31 @@ function open_(v) {
     markIfFinished(vid);
   }, 5000);
 }
+// The Toggl Track extension watches for its selector and builds a button
+// against whatever it finds. A brand new node each time is what tells it this
+// is a different video -- reusing one would leave the button pointing at the
+// last thing you watched. The page itself does nothing with these: they are
+// there to be read by an extension, or ignored entirely.
+function togglMount(v) {
+  togglUnmount();
+  const m = state.toggl[v.channel] || {};
+  const el = document.createElement("div");
+  el.id = "ptoggl";
+  // Tracking is per channel, not per video: one entry that says which creator
+  // you spent the time on. A channel you never filled in still tracks as
+  // itself rather than as nothing.
+  el.dataset.description = m.name || v.channel || "";
+  el.dataset.project = m.project || "";
+  el.dataset.tags = m.tags || "";
+  el.dataset.channel = v.channel || "";
+  el.dataset.videoId = v.id;
+  $("#pmeta").insertBefore(el, $("#pdesc"));
+}
+function togglUnmount() {
+  const el = $("#ptoggl");
+  if (el) el.remove();
+}
+
 async function attachSubs(id, vid) {
   let langs = [];
   try { langs = (await api(`/api/subs/${id}`)).langs || []; } catch (e) { return; }
@@ -757,6 +822,7 @@ function close_() {
   clearInterval(saveTimer);
   vid.pause(); vid.removeAttribute("src"); vid.load();
   $("#player").classList.remove("on");
+  togglUnmount();
   current = null; refresh();
 }
 $("#pclose").onclick = close_;
@@ -769,11 +835,83 @@ $("#pvideo").addEventListener("ended", async () => {
 });
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
-  if ($("#srcmodal").classList.contains("on")) closeSrc();
+  if ($("#tgmodal").classList.contains("on")) closeToggl();
+  else if ($("#srcmodal").classList.contains("on")) closeSrc();
   else if ($("#modal").classList.contains("on")) closeModal();
   else if ($("#player").classList.contains("on")) close_();
   else dismissAllJobs();
 });
+
+/* ---- toggl sheet ---- */
+let tgTimer = null;
+function openToggl() {
+  paintToggl();
+  $("#tgmodal").classList.add("on");
+}
+function closeToggl() { $("#tgmodal").classList.remove("on"); refresh(); }
+
+function paintToggl() {
+  const box = $("#tgrows");
+  box.innerHTML = "";
+  if (!state.togglChannels.length) {
+    box.innerHTML = '<div class="sub">No channels yet — track a source first.</div>';
+    return;
+  }
+  for (const c of state.togglChannels) box.appendChild(togglRow(c));
+}
+
+function togglRow(c) {
+  const el = document.createElement("div");
+  el.className = "tgrow";
+  const label = document.createElement("div");
+  label.className = "ch";
+  label.textContent = c.channel;
+  label.title = c.channel;
+  el.appendChild(label);
+
+  const fields = {};
+  for (const [key, ph] of [["name", "Name in Toggl"], ["project", "Project"],
+                           ["tags", "Tags, comma separated"]]) {
+    const inp = document.createElement("input");
+    inp.value = c[key] || "";
+    inp.placeholder = key === "name" ? c.channel : ph;
+    inp.title = ph;
+    inp.autocomplete = "off";
+    inp.spellcheck = false;
+    // Saved as you type rather than behind a Save button: there is one row per
+    // channel and nothing here is destructive, so a trip to a button would be
+    // the only hard part of the job.
+    inp.oninput = () => {
+      clearTimeout(tgTimer);
+      tgTimer = setTimeout(() => saveToggl(c, fields), 500);
+    };
+    fields[key] = inp;
+    el.appendChild(inp);
+  }
+  return el;
+}
+
+async function saveToggl(c, fields) {
+  const patch = {channel: c.channel, name: fields.name.value,
+                 project: fields.project.value, tags: fields.tags.value};
+  try {
+    const r = await post("/api/toggl", patch);
+    Object.assign(c, {name: patch.name, project: patch.project, tags: patch.tags});
+    state.togglChannels = r.channels;
+    state.toggl = Object.fromEntries(r.channels
+      .filter(x => x.name || x.project || x.tags)
+      .map(x => [x.channel, {name: x.name, project: x.project, tags: x.tags}]));
+    note("saved");
+  } catch (e) { note(e.message); }
+}
+function note(text) {
+  $("#tgnote").textContent = text;
+  setTimeout(() => { if ($("#tgnote").textContent === text) $("#tgnote").textContent = ""; },
+             1600);
+}
+$("#togglcfg").onclick = openToggl;
+$("#tgdone").onclick = closeToggl;
+$("#tgmodal").onclick = e => { if (e.target.id === "tgmodal") closeToggl(); };
 
 /* ---- collection modal ---- */
 let modalVideo = null;

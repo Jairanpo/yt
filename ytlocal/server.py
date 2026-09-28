@@ -109,8 +109,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         # The whole point is a sealed library: no outbound requests from the page.
+        # chrome-extension: is not a way out -- it only lets an extension you
+        # installed show its own packaged images, which is what the Toggl Track
+        # button needs to draw itself. The extension does its own talking to
+        # Toggl out of band; the page still reaches nothing but this server.
         self.send_header("Content-Security-Policy",
-                         "default-src 'self'; img-src 'self' data:; "
+                         "default-src 'self'; "
+                         "img-src 'self' data: chrome-extension: moz-extension:; "
                          "media-src 'self'; style-src 'self' 'unsafe-inline'; "
                          "script-src 'self' 'unsafe-inline'")
         for k, v in (extra or {}).items():
@@ -263,6 +268,15 @@ class Handler(BaseHTTPRequestHandler):
                 value = bool(body.get("value", True))
                 db.set_shelved(self.conn, [sid], value)
                 return self._json({"ok": True, "shelved": value})
+            if url.path == "/api/toggl":
+                body = self._body()
+                try:
+                    db.set_toggl(self.conn, body.get("channel"),
+                                 body.get("name"), body.get("project"),
+                                 body.get("tags"))
+                except ValueError as exc:
+                    return self._fail(400, str(exc))
+                return self._json({"ok": True, "channels": db.toggl_channels(self.conn)})
             if url.path == "/api/sort":
                 body = self._body()
                 sort = body.get("sort") or "default"
@@ -363,6 +377,10 @@ class Handler(BaseHTTPRequestHandler):
             "sorts": [{"key": k, "label": sort_labels[k]} for k in db.SORTS],
             "stats": db.stats(self.conn),
             "jobs": self._jobs(),
+            # One row per creator, not per video: the player looks the current
+            # video's channel up in here when it lays out the Toggl mount.
+            "toggl": db.toggl_map(self.conn),
+            "toggl_channels": db.toggl_channels(self.conn),
         })
 
     def _action(self, action, vid):

@@ -269,6 +269,44 @@ and `yt serve --status` never lies about a server that isn't there.
 
 ---
 
+## Toggl Track
+
+Time spent watching can go into [Toggl Track](https://toggl.com/track/) through
+its browser extension, tracked **per channel** — one entry that says which
+creator the hour went to, not one per video.
+
+Press **⏱ toggl** in the web library. Every creator the catalog knows gets a
+row with three fields:
+
+| Field | What it is |
+| --- | --- |
+| Name in Toggl | What the entry is called. Blank means the channel's own name. |
+| Project | The Toggl project it counts towards. It must already exist in Toggl under that exact name — Toggl will not create one, and an unknown name is quietly dropped. |
+| Tags | Comma separated, as Toggl takes them. |
+
+Fields save as you type. A channel with all three blank has no row at all and
+simply tracks as itself.
+
+Then install the integration once, in the extension:
+
+1. Toggl Track extension → **Settings → Integrations → Development mode**
+2. **New integration**, named whatever you like
+3. Origin: `http://127.0.0.1:8420` (or whichever port you serve on)
+4. Paste in [`integrations/toggl.js`](integrations/toggl.js), save, and grant
+   the permission it asks for
+
+A Toggl button then appears in the player while a video is open, carrying that
+channel's name, project and tags. It is a button you press — the timer does not
+start by itself.
+
+**This does not unseal the library.** The extension's content script runs with
+the extension's own permissions and does its talking to Toggl out of band; the
+page still reaches nothing but this server. The only concession in the CSP is
+`img-src chrome-extension: moz-extension:`, which lets an extension you
+installed draw its own packaged icons and opens no network path.
+
+---
+
 ## Playlists
 
 A playlist is tracked exactly like a channel — `yt add` takes an `@handle`, a

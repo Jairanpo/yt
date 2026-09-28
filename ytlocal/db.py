@@ -89,6 +89,18 @@ CREATE TABLE IF NOT EXISTS view_prefs (
     set_at  INTEGER NOT NULL
 );
 
+-- How a creator's videos should show up in Toggl Track, read by the browser
+-- extension's custom integration. Keyed on the creator as the library names
+-- them, which is the same string a card shows and the only one a video
+-- reached through someone else's playlist can be traced back to.
+CREATE TABLE IF NOT EXISTS toggl_map (
+    channel  TEXT PRIMARY KEY COLLATE NOCASE,
+    name     TEXT,              -- what to call it in Toggl; blank means the creator
+    project  TEXT,
+    tags     TEXT,              -- comma separated, as Toggl takes them
+    set_at   INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sv_source  ON source_videos(source_id, position);
 CREATE INDEX IF NOT EXISTS idx_sv_video   ON source_videos(video_id);
 CREATE INDEX IF NOT EXISTS idx_ci_coll    ON collection_items(collection_id, rank);
@@ -751,6 +763,54 @@ def set_sort(conn, sort: str, source=None, collection=None) -> None:
                ON CONFLICT(scope) DO UPDATE SET sort = excluded.sort,
                                                 set_at = excluded.set_at""",
             (scope, sort, now()))
+    conn.commit()
+
+
+# --- toggl ----------------------------------------------------------------
+
+def toggl_map(conn) -> dict:
+    """{creator: {name, project, tags}} for every creator that has a mapping."""
+    return {r["channel"]: {"name": r["name"] or "", "project": r["project"] or "",
+                           "tags": r["tags"] or ""}
+            for r in conn.execute("SELECT * FROM toggl_map")}
+
+
+def toggl_channels(conn) -> list:
+    """Every creator the catalog knows, each with its mapping or blanks.
+
+    Drawn from the sources rather than the videos: a creator you track but
+    have not catalogued yet still deserves a row to fill in.
+    """
+    rows = conn.execute(
+        """SELECT DISTINCT CASE WHEN kind = 'channel' THEN name
+                                ELSE COALESCE(owner, name) END AS channel
+             FROM sources WHERE COALESCE(CASE WHEN kind = 'channel' THEN name
+                                              ELSE COALESCE(owner, name) END, '') <> ''
+            ORDER BY channel COLLATE NOCASE""").fetchall()
+    have = toggl_map(conn)
+    return [dict(channel=r["channel"],
+                 **have.get(r["channel"], {"name": "", "project": "", "tags": ""}))
+            for r in rows]
+
+
+def set_toggl(conn, channel: str, name="", project="", tags="") -> None:
+    """Save one creator's mapping, or drop the row once it is all blank."""
+    channel = (channel or "").strip()
+    if not channel:
+        raise ValueError("which channel?")
+    name = (name or "").strip()
+    project = (project or "").strip()
+    tags = (tags or "").strip()
+    if not (name or project or tags):
+        conn.execute("DELETE FROM toggl_map WHERE channel = ?", (channel,))
+    else:
+        conn.execute(
+            """INSERT INTO toggl_map (channel, name, project, tags, set_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(channel) DO UPDATE SET name = excluded.name,
+                    project = excluded.project, tags = excluded.tags,
+                    set_at = excluded.set_at""",
+            (channel, name, project, tags, now()))
     conn.commit()
 
 
