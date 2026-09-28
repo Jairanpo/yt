@@ -297,8 +297,13 @@ PAGE = r"""<!doctype html>
   <h3>Toggl Track</h3>
   <div class="who hint">One row per channel: what to call it in Toggl, the
     project it counts towards, and any tags. Leave a field blank and the
-    channel's own name stands in. Needs the custom integration from
-    <code>integrations/toggl.js</code> in the extension.</div>
+    channel's own name stands in. A project has to exist in Toggl already —
+    it will not be created for you. Needs <code>toggl_token</code> in your
+    config; without one the timer button stays away.</div>
+  <div class="who hint" id="tgoff" hidden style="color:#d4705c">
+    No <code>toggl_token</code> in your config yet, so nothing here can start a
+    timer. Toggl → Profile settings → API token, then restart <code>yt
+    serve</code>.</div>
   <div class="tgrows" id="tgrows"></div>
   <div class="bar2">
     <span class="count grow" id="tgnote"></span>
@@ -893,6 +898,9 @@ document.addEventListener("keydown", e => {
 let tgTimer = null;
 function openToggl() {
   paintToggl();
+  // Say so up front rather than letting them fill in seven rows and then
+  // wonder why no button ever turns up.
+  $("#tgoff").hidden = tgReady;
   $("#tgmodal").classList.add("on");
 }
 function closeToggl() {
