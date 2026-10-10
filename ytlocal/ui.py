@@ -142,6 +142,25 @@ PAGE = r"""<!doctype html>
   #pmeta { max-width:1100px; margin:14px auto 0; width:100%; color:#e9e7e3; }
   #pmeta h2 { margin:0 0 4px; font-size:17px; font-weight:600; }
   #pmeta .sub { color:#9b988f; }
+  /* Chapters: the bar is split into the creator's sections like YouTube's
+     timeline, each filling as you pass through it; the list jumps to one. */
+  #pchap { display:flex; gap:3px; max-width:1100px; width:100%; height:6px;
+           flex-shrink:0;
+           margin:8px auto 0; }
+  #pchap[hidden], #pchlist[hidden] { display:none; }
+  #pchap button { flex:1 1 0; min-width:2px; padding:0; border:none;
+                  border-radius:2px; cursor:pointer; transition:transform .1s;
+                  background:linear-gradient(to right, var(--accent) var(--p,0%),
+                                             rgba(233,231,227,.22) var(--p,0%)); }
+  #pchap button:hover { transform:scaleY(1.8); }
+  #pchlist { list-style:none; margin:10px 0 0; padding:0; max-height:18vh;
+             overflow:auto; font-size:13.5px; color-scheme:dark; }
+  #pchlist button { display:flex; gap:10px; width:100%; text-align:left;
+                    background:none; border:none; border-radius:4px; padding:2px 6px;
+                    font:inherit; color:#c3c0b8; cursor:pointer; }
+  #pchlist button:hover { background:rgba(233,231,227,.08); color:#e9e7e3; }
+  #pchlist li.on button { color:var(--accent); }
+  #pchlist .ts { color:#9b988f; min-width:5ch; font-variant-numeric:tabular-nums; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
   /* The Toggl timer, when a token is configured. Without one the whole row
@@ -342,8 +361,10 @@ PAGE = r"""<!doctype html>
 <div id="player">
   <button id="pclose" title="Close (Esc)">&times;</button>
   <video id="pvideo" controls playsinline></video>
+  <div id="pchap" hidden></div>
   <div id="pmeta"><h2 id="ptitle"></h2><div class="sub" id="psub"></div>
     <div class="sub" id="pstatus" hidden></div>
+    <ol id="pchlist" hidden></ol>
     <div id="pdesc"></div></div>
 </div>
 
@@ -773,6 +794,7 @@ function open_(v) {
   $("#psub").textContent = [v.channel, fmtDate(v), fmtDur(v.duration)]
                              .filter(Boolean).join(" · ");
   $("#pdesc").textContent = v.description || "";
+  showChapters([], v.id);
   togglMount(v);
   $("#player").classList.add("on");
   if (v.have) {
@@ -780,6 +802,8 @@ function open_(v) {
     vid.currentTime = v.progress || 0;
     vid.play().catch(()=>{});
     attachSubs(v.id, vid);
+    api(`/api/chapters/${v.id}`).then(d => showChapters(d.chapters, v.id))
+                                .catch(() => {});
   } else {
     startStream(v, vid).catch(e => {
       if (current?.id === v.id) streamStatus(`Couldn't stream: ${e.message}`);
@@ -931,6 +955,7 @@ async function startStream(v, vid) {
     if (!MediaSource.isTypeSupported(meta[k]))
       throw new Error(`this browser cannot play ${meta[k]}`);
   if (!me.alive) return;
+  showChapters(meta.chapters, v.id);
   const ms = me.ms = new MediaSource();
   me.objectUrl = URL.createObjectURL(ms);
   vid.src = me.objectUrl;
@@ -1003,6 +1028,49 @@ function stopStream() {
   stream = null;
 }
 
+/* ---- chapters ---- */
+let chapters = [];
+function showChapters(list, id) {
+  if (current?.id !== id) return;           // player moved on while we waited
+  chapters = list || [];
+  const strip = $("#pchap"), ol = $("#pchlist");
+  strip.replaceChildren(); ol.replaceChildren();
+  strip.hidden = ol.hidden = !chapters.length;
+  const jump = t => { const vid = $("#pvideo"); vid.currentTime = t; vid.play().catch(()=>{}); };
+  chapters.forEach(c => {
+    const ts = fmtDur(c.start) || "0:00";
+    const seg = document.createElement("button");
+    seg.style.flexGrow = Math.max(c.end - c.start, 1);
+    seg.title = `${ts} · ${c.title}`;
+    seg.onclick = () => jump(c.start);
+    strip.appendChild(seg);
+    const li = document.createElement("li"), b = document.createElement("button");
+    b.innerHTML = `<span class="ts"></span><span></span>`;
+    b.children[0].textContent = ts;
+    b.children[1].textContent = c.title;
+    b.onclick = () => jump(c.start);
+    li.appendChild(b);
+    ol.appendChild(li);
+  });
+  paintChapter();
+}
+function paintChapter() {
+  if (!chapters.length) return;
+  const t = $("#pvideo").currentTime, segs = $("#pchap").children,
+        items = $("#pchlist").children;
+  chapters.forEach((c, i) => {
+    const p = Math.min(100, Math.max(0, 100 * (t - c.start) / (c.end - c.start)));
+    segs[i].style.setProperty("--p", p + "%");
+    const on = c.start <= t && t < c.end;
+    if (items[i].classList.contains("on") !== on) {
+      items[i].classList.toggle("on", on);
+      if (on) items[i].scrollIntoView({block: "nearest"});
+    }
+  });
+}
+$("#pvideo").addEventListener("timeupdate", paintChapter);
+$("#pvideo").addEventListener("seeked", paintChapter);
+
 async function attachSubs(id, vid) {
   let langs = [];
   try { langs = (await api(`/api/subs/${id}`)).langs || []; } catch (e) { return; }
@@ -1036,6 +1104,7 @@ function close_() {
   vid.pause(); vid.removeAttribute("src"); vid.load();
   $("#player").classList.remove("on");
   togglUnmount();
+  showChapters([], current?.id);
   current = null; refresh();
 }
 $("#pclose").onclick = close_;

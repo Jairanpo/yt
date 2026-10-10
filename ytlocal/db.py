@@ -5,6 +5,7 @@ is a local grouping you build yourself. Both are many-to-many against videos --
 one video can sit in a channel, two playlists and a collection at once, which a
 single foreign key on videos could not express.
 """
+import json
 import re
 import sqlite3
 import time
@@ -55,7 +56,10 @@ CREATE TABLE IF NOT EXISTS videos (
     -- 0 visible · 1 hidden by you · 2 hidden by sync for being unavailable.
     -- Keeping those apart is what lets sync tidy up after itself without ever
     -- overruling a call you made by hand.
-    hidden          INTEGER NOT NULL DEFAULT 0
+    hidden          INTEGER NOT NULL DEFAULT 0,
+    -- The video's sections as JSON [{start, end, title}]. NULL until first
+    -- asked for; '[]' once we know the creator never made any.
+    chapters        TEXT
 );
 
 -- position is the video's index within that source. For a playlist this is
@@ -211,8 +215,9 @@ def _add_missing_columns(conn) -> None:
         if col not in have:
             conn.execute(
                 f"ALTER TABLE videos ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
-    if "left_source" not in have:
-        conn.execute("ALTER TABLE videos ADD COLUMN left_source TEXT")
+    for col in ("left_source", "chapters"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {col} TEXT")
     have_src = {r[1] for r in conn.execute("PRAGMA table_info(sources)")}
     for col in ("channel_id", "section"):
         if col not in have_src:
@@ -628,6 +633,12 @@ def set_downloaded(conn, vid, path, size, upload_date=None, description=None,
 def clear_downloaded(conn, vid: str) -> None:
     conn.execute("UPDATE videos SET downloaded_path = NULL, downloaded_at = NULL,"
                  " filesize = NULL WHERE id = ?", (vid,))
+    conn.commit()
+
+
+def set_chapters(conn, vid: str, chapters: list) -> None:
+    conn.execute("UPDATE videos SET chapters = ? WHERE id = ?",
+                 (json.dumps(chapters), vid))
     conn.commit()
 
 

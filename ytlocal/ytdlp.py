@@ -311,7 +311,16 @@ def fetch_info(cfg: dict, vid: str) -> dict:
         "description": info.get("description"),
         "duration": int(info["duration"]) if info.get("duration") else None,
         "upload_date": _fmt_date(info.get("upload_date")),
+        "chapters": chapters(info),
     }
+
+
+def chapters(info: dict) -> list:
+    """The creator's sections, from the timestamps they listed. Often none."""
+    return [{"start": round(float(c["start_time"]), 2),
+             "end": round(float(c["end_time"]), 2),
+             "title": c.get("title") or ""}
+            for c in info.get("chapters") or []]
 
 
 def format_selector(max_height: int, audio_only=False) -> str:
@@ -349,7 +358,7 @@ def stream_info(cfg: dict, vid: str) -> dict:
     if proc.returncode != 0 or not proc.stdout.strip():
         raise YtdlpError((proc.stderr or "no streamable format").strip()[:500])
     info = json.loads(proc.stdout.splitlines()[0])
-    out = {"duration": info.get("duration")}
+    out = {"duration": info.get("duration"), "chapters": chapters(info)}
     for f in info.get("requested_formats") or []:
         kind = "audio" if f.get("vcodec") in (None, "none") else "video"
         codec = f["acodec"] if kind == "audio" else f["vcodec"]

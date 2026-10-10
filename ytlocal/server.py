@@ -207,6 +207,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"jobs": self._jobs()})
             if path.startswith("/thumb/"):
                 return self._thumb(path[7:])
+            if path.startswith("/api/chapters/"):
+                return self._chapters(path[len("/api/chapters/"):])
             if path.startswith("/api/stream/"):
                 return self._stream_meta(path[len("/api/stream/"):])
             if path.startswith("/stream/"):
@@ -542,7 +544,10 @@ class Handler(BaseHTTPRequestHandler):
             info = self.server.streams.get(vid)
         except ytdlp.YtdlpError as exc:
             return self._fail(502, str(exc))
+        if db.get_video(self.conn, vid):
+            db.set_chapters(self.conn, vid, info["chapters"])
         return self._json({"duration": info["duration"],
+                           "chapters": info["chapters"],
                            "video": info["video"]["mime"],
                            "audio": info["audio"]["mime"]})
 
@@ -579,6 +584,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
             while buf := resp.read(CHUNK):
                 self.wfile.write(buf)
+
+    def _chapters(self, vid):
+        """Looked up once per video, the first time its player opens."""
+        if not _ID_RE.match(vid):
+            return self._fail(400, "bad id")
+        row = db.get_video(self.conn, vid)
+        if not row:
+            return self._fail(404, "unknown video")
+        if row["chapters"] is not None:
+            return self._json({"chapters": json.loads(row["chapters"])})
+        try:
+            found = ytdlp.fetch_info(self.cfg, vid)["chapters"]
+        except ytdlp.YtdlpError:
+            # Offline or rate-limited: say none for now, and ask again next time.
+            return self._json({"chapters": []})
+        db.set_chapters(self.conn, vid, found)
+        return self._json({"chapters": found})
 
     def _sub_langs(self, vid):
         """Queried lazily when the player opens, so listing stays glob-free."""

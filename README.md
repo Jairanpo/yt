@@ -267,6 +267,11 @@ and `yt serve --status` never lies about a server that isn't there.
   Position is saved every five seconds and restored next time — cards show a
   resume bar. Reaching the end marks it watched, and so does leaving in the last
   8% — outros and credits do not have to be sat through. **Esc** closes.
+- **Chapters.** When the creator split a video into sections, the player
+  shows them as YouTube does: a bar under the video cut into one piece per
+  section, each filling as you pass through it, and a list of timestamps
+  below the title. Click either to jump there. They are looked up the first
+  time a video opens (a few seconds) and remembered after that.
 
 ### Streaming
 
