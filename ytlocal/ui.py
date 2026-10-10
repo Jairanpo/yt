@@ -343,6 +343,7 @@ PAGE = r"""<!doctype html>
   <button id="pclose" title="Close (Esc)">&times;</button>
   <video id="pvideo" controls playsinline></video>
   <div id="pmeta"><h2 id="ptitle"></h2><div class="sub" id="psub"></div>
+    <div class="sub" id="pstatus" hidden></div>
     <div id="pdesc"></div></div>
 </div>
 
@@ -607,7 +608,7 @@ function seenRow(v) {
   el.querySelector(".t").textContent =
     v.unavailable ? "Private or deleted video" : v.title;
   el.title = v.unavailable ? v.id : v.title;
-  if (v.have) el.onclick = () => open_(v);
+  if (v.have || !v.unavailable) el.onclick = () => open_(v);
   else el.style.cursor = "default";
 
   if (!v.have && !v.unavailable) {
@@ -670,6 +671,13 @@ function card(v, seq) {
   row.appendChild(main);
 
   if (!v.have && !v.unavailable) {
+    const play = document.createElement("button");
+    play.className = "act icon";
+    play.textContent = "▶";
+    play.title = "Stream it now — nothing is saved to disk";
+    play.onclick = () => open_(v);
+    row.appendChild(play);
+
     const aud = document.createElement("button");
     aud.className = "act icon";
     aud.textContent = "♪";
@@ -739,7 +747,8 @@ function card(v, seq) {
     };
     row.appendChild(del);
   }
-  const openThumb = () => v.have ? open_(v) : grab(v, main);
+  // Looking costs nothing now: a click on something not on disk streams it.
+  const openThumb = () => v.unavailable && !v.have ? null : open_(v);
   el.querySelector(".thumbwrap").onclick = openThumb;
   el.querySelector(".title").onclick = openThumb;
   return el;
@@ -759,16 +768,23 @@ function open_(v) {
   current = v;
   const vid = $("#pvideo");
   vid.querySelectorAll("track").forEach(t => t.remove());
-  vid.src = `/media/${v.id}`;
+  stopStream();
   $("#ptitle").textContent = v.title;
   $("#psub").textContent = [v.channel, fmtDate(v), fmtDur(v.duration)]
                              .filter(Boolean).join(" · ");
   $("#pdesc").textContent = v.description || "";
   togglMount(v);
   $("#player").classList.add("on");
-  vid.currentTime = v.progress || 0;
-  vid.play().catch(()=>{});
-  attachSubs(v.id, vid);
+  if (v.have) {
+    vid.src = `/media/${v.id}`;
+    vid.currentTime = v.progress || 0;
+    vid.play().catch(()=>{});
+    attachSubs(v.id, vid);
+  } else {
+    startStream(v, vid).catch(e => {
+      if (current?.id === v.id) streamStatus(`Couldn't stream: ${e.message}`);
+    });
+  }
   clearInterval(saveTimer);
   saveTimer = setInterval(() => {
     if (!current || vid.paused) return;
@@ -843,6 +859,150 @@ async function togglClick() {
   paintToggl_();
 }
 
+/* ---- streaming: watch without downloading ----
+   YouTube sends picture and sound as two separate files. Each opens with a
+   small index (the `sidx` box) that says where every few seconds of it start,
+   like a book's table of contents. The page reads that, then asks this server
+   for only the pieces around where you are watching and hands them to the
+   <video> through MediaSource. Every byte still goes through this server. */
+const AHEAD = 60, BEHIND = 30;
+let stream = null;
+
+function streamStatus(msg) {
+  $("#pstatus").hidden = !msg;
+  $("#pstatus").textContent = msg || "";
+}
+
+async function rangeBytes(url, lo, hi) {
+  const r = await fetch(url, {headers: {Range: `bytes=${lo}-${hi}`}});
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+// A YouTube DASH file is ftyp, moov, sidx, then the media itself. The first
+// two are the "init segment" the decoder needs before any piece of media.
+async function readIndex(url) {
+  let head = new Uint8Array(0), off = 0;
+  const need = async n => { if (head.length < n) head = await rangeBytes(url, 0, n + 8191); };
+  for (;;) {
+    await need(off + 8);
+    const dv = new DataView(head.buffer);
+    const size = dv.getUint32(off);
+    const type = String.fromCharCode(...head.subarray(off + 4, off + 8));
+    if (!size) throw new Error("stream has no index");
+    if (type !== "sidx") { off += size; continue; }
+    await need(off + size);
+    const d = new DataView(head.buffer);
+    const ver = head[off + 8];
+    let p = off + 16;                       // skip version/flags and reference id
+    const scale = d.getUint32(p); p += 4;
+    let t, first;
+    if (ver === 0) { t = d.getUint32(p); first = d.getUint32(p + 4); p += 8; }
+    else { t = Number(d.getBigUint64(p)); first = Number(d.getBigUint64(p + 8)); p += 16; }
+    const count = d.getUint16(p + 2); p += 4;
+    let byte = off + size + first;
+    const segs = [];
+    for (let i = 0; i < count; i++, p += 12) {
+      const len = d.getUint32(p) & 0x7fffffff, dur = d.getUint32(p + 4);
+      segs.push({lo: byte, hi: byte + len - 1, start: t / scale, end: (t + dur) / scale});
+      byte += len; t += dur;
+    }
+    return {init: head.slice(0, off), segs};
+  }
+}
+
+// SourceBuffer work is asynchronous; this turns one call into a promise.
+const sbDo = (sb, fn) => new Promise((ok, bad) => {
+  sb.addEventListener("updateend", ok, {once: true});
+  sb.addEventListener("error", bad, {once: true});
+  try { fn(); } catch (e) { bad(e); }
+});
+const buffered = (sb, s) => {
+  const mid = (s.start + s.end) / 2, b = sb.buffered;
+  for (let i = 0; i < b.length; i++) if (b.start(i) <= mid && mid < b.end(i)) return true;
+  return false;
+};
+
+async function startStream(v, vid) {
+  const me = stream = {alive: true, tracks: []};
+  streamStatus("Finding the stream…");
+  const meta = await api(`/api/stream/${v.id}`);
+  for (const k of ["video", "audio"])
+    if (!MediaSource.isTypeSupported(meta[k]))
+      throw new Error(`this browser cannot play ${meta[k]}`);
+  if (!me.alive) return;
+  const ms = me.ms = new MediaSource();
+  me.objectUrl = URL.createObjectURL(ms);
+  vid.src = me.objectUrl;
+  await new Promise(r => ms.addEventListener("sourceopen", r, {once: true}));
+  const idx = await Promise.all(["video", "audio"].map(async kind => {
+    const url = `/stream/${v.id}/${kind}`;
+    return {url, kind, ...(await readIndex(url))};
+  }));
+  if (!me.alive) return;
+  // Both buffers must exist before either gets data: once the first one
+  // has its init segment, Chrome will not accept a second.
+  me.tracks = idx.map(i => ({url: i.url, sb: ms.addSourceBuffer(meta[i.kind]),
+                             segs: i.segs, init: i.init, busy: false}));
+  await Promise.all(me.tracks.map(t => sbDo(t.sb, () => t.sb.appendBuffer(t.init))));
+  if (!me.alive) return;
+  if (meta.duration) ms.duration = meta.duration;
+  streamStatus("Streaming — nothing is saved to disk.");
+
+  const pump = async t => {
+    if (t.busy || !me.alive) return;
+    t.busy = true;
+    try {
+      while (me.alive) {
+        const now = vid.currentTime;
+        // Let go of what is well behind, so an hour-long video does not
+        // pile up in memory.
+        const b = t.sb.buffered;
+        if (b.length && b.start(0) < now - BEHIND - 10)
+          await sbDo(t.sb, () => t.sb.remove(0, now - BEHIND));
+        const seg = t.segs.find(s => s.end > now && s.start < now + AHEAD
+                                     && !buffered(t.sb, s));
+        if (!seg) break;
+        const bytes = await rangeBytes(t.url, seg.lo, seg.hi);
+        if (!me.alive) return;
+        try { await sbDo(t.sb, () => t.sb.appendBuffer(bytes)); }
+        catch (e) {
+          // Full: drop everything but the stretch around the playhead, retry.
+          if (e.name !== "QuotaExceededError") throw e;
+          await sbDo(t.sb, () => t.sb.remove(0, Math.max(0, now - 5)));
+          await sbDo(t.sb, () => t.sb.remove(now + AHEAD, Infinity));
+          await sbDo(t.sb, () => t.sb.appendBuffer(bytes));
+        }
+      }
+      // Tell the player there is no more once both tracks hold their last piece.
+      const done = me.tracks.every(x => buffered(x.sb, x.segs[x.segs.length - 1]));
+      if (done && ms.readyState === "open" && me.tracks.every(x => !x.sb.updating))
+        ms.endOfStream();
+    } catch (e) {
+      if (me.alive) streamStatus(`Stream stalled: ${e.message}`);
+    } finally { t.busy = false; }
+  };
+  me.kick = () => me.tracks.forEach(pump);
+  vid.addEventListener("timeupdate", me.kick);
+  vid.addEventListener("seeking", me.kick);
+  vid.currentTime = v.progress || 0;
+  me.kick();
+  vid.play().catch(() => {});
+}
+
+function stopStream() {
+  streamStatus("");
+  if (!stream) return;
+  const vid = $("#pvideo");
+  stream.alive = false;
+  if (stream.kick) {
+    vid.removeEventListener("timeupdate", stream.kick);
+    vid.removeEventListener("seeking", stream.kick);
+  }
+  if (stream.objectUrl) URL.revokeObjectURL(stream.objectUrl);
+  stream = null;
+}
+
 async function attachSubs(id, vid) {
   let langs = [];
   try { langs = (await api(`/api/subs/${id}`)).langs || []; } catch (e) { return; }
@@ -872,6 +1032,7 @@ function close_() {
   if (current) post(`/api/progress/${current.id}`, {value: vid.currentTime}).catch(()=>{});
   markIfFinished(vid);
   clearInterval(saveTimer);
+  stopStream();
   vid.pause(); vid.removeAttribute("src"); vid.load();
   $("#player").classList.remove("on");
   togglUnmount();

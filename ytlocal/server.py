@@ -2,7 +2,11 @@
 import json
 import mimetypes
 import re
+import threading
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -93,6 +97,31 @@ def row_to_json(r) -> dict:
     }
 
 
+class Streams:
+    """Resolved stream addresses, so a seek does not cost a yt-dlp run.
+
+    The signed URLs live for about six hours; five keeps a margin. One lock per
+    video stops the page's parallel video and audio requests from resolving
+    the same thing twice.
+    """
+    TTL = 5 * 3600
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self._lock = threading.Lock()
+        self._locks, self._hit = {}, {}
+
+    def get(self, vid, fresh=False) -> dict:
+        with self._lock:
+            vlock = self._locks.setdefault(vid, threading.Lock())
+        with vlock:
+            hit = self._hit.get(vid)
+            if fresh or not hit or time.time() - hit[0] > self.TTL:
+                hit = (time.time(), ytdlp.stream_info(self.cfg, vid))
+                self._hit[vid] = hit
+            return hit[1]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ytlocal"
     protocol_version = "HTTP/1.1"
@@ -114,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         # server to start it, and the server is what talks to Toggl.
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' data:; "
-                         "media-src 'self'; style-src 'self' 'unsafe-inline'; "
+                         "media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
                          "script-src 'self' 'unsafe-inline'")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
@@ -178,6 +207,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"jobs": self._jobs()})
             if path.startswith("/thumb/"):
                 return self._thumb(path[7:])
+            if path.startswith("/api/stream/"):
+                return self._stream_meta(path[len("/api/stream/"):])
+            if path.startswith("/stream/"):
+                return self._stream(path[len("/stream/"):])
             if path.startswith("/media/"):
                 return self._media(path[7:])
             if path.startswith("/subs/"):
@@ -426,10 +459,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"configured": True, "running": {}, "error": str(exc)})
 
     def _action(self, action, vid):
+        # Read the body even when refusing: left unread on a kept-alive
+        # connection, it would be parsed as the start of the next request.
+        body = self._body()
         row = db.get_video(self.conn, vid)
         if not row:
             return self._fail(404, "unknown video")
-        body = self._body()
         if action == "get":
             job = self.server.dl.enqueue(vid, row["title"], bool(body.get("audio")))
             return self._json({"ok": True, "job": job.as_dict()})
@@ -493,6 +528,57 @@ class Handler(BaseHTTPRequestHandler):
             return self._fail(404, "file missing from disk")
         ctype = mimetypes.guess_type(path.name)[0] or "video/mp4"
         return self._serve_file(path, ctype, ranges=True)
+
+    # --- streaming without downloading -----------------------------------
+    #
+    # The page plays a stream through MediaSource: it reads each track's index,
+    # then asks for the byte ranges it needs. Every one of those requests comes
+    # here and is relayed to YouTube, so the page itself stays sealed.
+
+    def _stream_meta(self, vid):
+        if not _ID_RE.match(vid):
+            return self._fail(400, "bad id")
+        try:
+            info = self.server.streams.get(vid)
+        except ytdlp.YtdlpError as exc:
+            return self._fail(502, str(exc))
+        return self._json({"duration": info["duration"],
+                           "video": info["video"]["mime"],
+                           "audio": info["audio"]["mime"]})
+
+    def _stream(self, rest):
+        vid, _, kind = rest.partition("/")
+        if not _ID_RE.match(vid) or kind not in ("video", "audio"):
+            return self._fail(400, "bad stream")
+        rng = self.headers.get("Range") or ""
+        if not _RANGE_RE.match(rng):
+            return self._fail(400, "a byte range is required")
+        for fresh in (False, True):
+            try:
+                track = self.server.streams.get(vid, fresh=fresh)[kind]
+            except ytdlp.YtdlpError as exc:
+                return self._fail(502, str(exc))
+            req = urllib.request.Request(track["url"],
+                                         headers={**track["headers"], "Range": rng})
+            try:
+                resp = urllib.request.urlopen(req, timeout=30)
+                break
+            except urllib.error.HTTPError as exc:
+                # 403 is what an expired signature looks like: resolve again once.
+                if exc.code != 403 or fresh:
+                    return self._fail(502, f"YouTube answered {exc.code}")
+        with resp:
+            self.send_response(resp.status)
+            self.send_header("Content-Type", "video/mp4" if kind == "video" else "audio/mp4")
+            for h in ("Content-Length", "Content-Range"):
+                if resp.headers.get(h):
+                    self.send_header(h, resp.headers[h])
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            while buf := resp.read(CHUNK):
+                self.wfile.write(buf)
 
     def _sub_langs(self, vid):
         """Queried lazily when the player opens, so listing stays glob-free."""
@@ -575,5 +661,6 @@ def serve(cfg, port=None, host="127.0.0.1", verbose=False):
     httpd.daemon_threads = True
     httpd.dl = Downloader(cfg, config.media_dir(cfg))
     httpd.cat = Cataloguer(cfg)
+    httpd.streams = Streams(cfg)
     httpd.verbose = verbose
     return httpd

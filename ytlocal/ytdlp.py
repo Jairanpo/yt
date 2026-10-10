@@ -326,6 +326,41 @@ def format_selector(max_height: int, audio_only=False) -> str:
     )
 
 
+def stream_selector(max_height: int) -> str:
+    # YouTube no longer serves one file with both picture and sound, so a
+    # stream is always a pair the page stitches back together. Plain https
+    # (not HLS) H.264 + AAC is what every browser's MediaSource can take, and
+    # those files carry the byte index that makes seeking possible.
+    h = int(max_height)
+    return (f"bv*[height<=?{h}][ext=mp4][vcodec^=avc1][protocol=https]"
+            f"+ba[ext=m4a][protocol=https]")
+
+
+def stream_info(cfg: dict, vid: str) -> dict:
+    """Where to read a video from without downloading it.
+
+    Returns {duration, video, audio}; each track is {url, headers, mime, size}.
+    The URLs are signed and expire after a few hours.
+    """
+    cmd = base_cmd(cfg) + ["-j", "--no-playlist",
+                           "-f", stream_selector(cfg["max_height"]),
+                           f"https://www.youtube.com/watch?v={vid}"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise YtdlpError((proc.stderr or "no streamable format").strip()[:500])
+    info = json.loads(proc.stdout.splitlines()[0])
+    out = {"duration": info.get("duration")}
+    for f in info.get("requested_formats") or []:
+        kind = "audio" if f.get("vcodec") in (None, "none") else "video"
+        codec = f["acodec"] if kind == "audio" else f["vcodec"]
+        out[kind] = {"url": f["url"], "headers": f.get("http_headers") or {},
+                     "mime": f'{kind}/mp4; codecs="{codec}"',
+                     "size": f.get("filesize")}
+    if "video" not in out or "audio" not in out:
+        raise YtdlpError("no separate H.264 + AAC streams to play")
+    return out
+
+
 def output_template(media_dir: Path) -> str:
     return str(media_dir / (
         "%(channel,uploader|Unknown)s/"

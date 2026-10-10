@@ -237,8 +237,9 @@ and `yt serve --status` never lies about a server that isn't there.
   through the playlists you visited, and a view worth returning to can just be
   bookmarked.
 - **Cards** show a thumbnail, runtime, and a green *on disk* flag. The button
-  reads **Watch** if the file is local and **Download** if it isn't; clicking
-  the thumbnail or title does the same thing. **☆** stars, **✓** marks it
+  reads **Watch** if the file is local and **Download** if it isn't. **▶**, on
+  anything not yet downloaded, [streams it](#streaming) instead, and so does
+  clicking the thumbnail or title. **☆** stars, **✓** marks it
   watched and **↺** puts it back in the queue, **⊘** hides it, **✕** deletes
   the file (with a confirm) and keeps the catalog entry. **♪**, on anything not yet downloaded, fetches the
   audio alone. A watched card dims its thumbnail and flags itself *watched*; an
@@ -266,6 +267,22 @@ and `yt serve --status` never lies about a server that isn't there.
   Position is saved every five seconds and restored next time — cards show a
   resume bar. Reaching the end marks it watched, and so does leaving in the last
   8% — outros and credits do not have to be sat through. **Esc** closes.
+
+### Streaming
+
+Not everything is worth keeping. **▶** plays a video straight away and writes
+nothing to disk; progress and *watched* are saved exactly as for a download.
+
+YouTube no longer offers one file with both picture and sound, so a stream is
+two files — H.264 video up to `max_height`, and AAC audio — that the page puts
+back together with the browser's MediaSource. Each file opens with an index of
+where every few seconds start; the page reads it and fetches only the next
+minute or so around the playhead, which is what makes seeking instant.
+
+The library stays sealed: the page asks `yt serve` for each piece, and the
+server relays it from Google. The first play of a video waits a few seconds
+while yt-dlp finds the stream; seeks after that do not. Streams carry no
+subtitles — download the video if you want them.
 
 ---
 
