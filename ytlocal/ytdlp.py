@@ -337,8 +337,10 @@ def _sync_picks(cfg: dict, ids: list):
     Costs a request per video rather than one per hundred, which is fine for
     a handful picked by hand -- and in return the dates are exact.
     """
+    # Formats are a download's concern; when YouTube withholds them (its bot
+    # check does) the title and date still come through.
     cmd = base_cmd(cfg) + ["--dump-json", "--skip-download", "--no-playlist",
-                           "--ignore-errors"]
+                           "--ignore-errors", "--ignore-no-formats-error"]
     proc = subprocess.run(cmd + [f"https://www.youtube.com/watch?v={v}" for v in ids],
                           capture_output=True, text=True)
     infos = {}
@@ -353,7 +355,7 @@ def _sync_picks(cfg: dict, ids: list):
         raise YtdlpError(f"could not read {', '.join(ids)}\n"
                          f"{(proc.stderr or '').strip()[:800]}")
     first = next(iter(infos.values()))
-    cid = first.get("channel_id")
+    cid = first.get("channel_id") or _channel_id_of(cfg, first.get("uploader_id"))
     owner = first.get("channel") or first.get("uploader")
     meta = {"kind": "playlist", "source_id": PICKS_PREFIX + (cid or first["id"]),
             "name": "Picked videos", "owner": owner, "handle": _handle_from(first),
@@ -376,6 +378,16 @@ def _sync_picks(cfg: dict, ids: list):
             "date_approx": 0, "position": pos,
         })
     return meta, entries
+
+
+def _channel_id_of(cfg: dict, handle):
+    """A channel's UC... id from its @handle, for when a video's page left it
+    out. Without it the picks could not be filed under the channel."""
+    if not handle:
+        return None
+    entries, _ = _flat(cfg, _channel_base(handle) + "/videos", timeout=120, end=1)
+    return next((e.get("playlist_channel_id") or e.get("channel_id")
+                 for e in entries), None)
 
 
 def _list_id(url: str):
