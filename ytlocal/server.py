@@ -54,7 +54,7 @@ def _check_yt_ref(raw, what: str) -> str:
 def clean_source_ref(raw) -> str:
     """What the Add box accepts: a handle, a bare id, or a YouTube URL."""
     ref = _check_yt_ref(raw, "paste a channel handle (@name), a channel URL, "
-                             "a playlist URL or a PL… id")
+                             "a playlist URL, a PL… id or a video link")
     if ytdlp.is_index(ytdlp.source_url(ref)):
         # The tab lists playlists, not videos, so syncing it would find
         # nothing. Browsing it is the thing to do instead, and this page can.

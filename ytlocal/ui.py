@@ -332,8 +332,8 @@ PAGE = r"""<!doctype html>
 
 <div id="srcmodal" class="sheet"><div class="box">
   <h3 id="stitle">Track a channel or playlist</h3>
-  <div class="who hint" id="shint">An @handle, a channel URL, or a playlist URL
-    or <code>PL…</code> id.</div>
+  <div class="who hint" id="shint">An @handle, a channel URL, a playlist URL
+    or <code>PL…</code> id, or one video's link — unlisted ones too.</div>
   <div id="sask">
     <div class="mk" style="margin-top:0">
       <input id="snew" placeholder="@3blue1brown" autocomplete="off"
@@ -429,7 +429,7 @@ async function refresh(opts) {
 }
 
 // One mark per kind of source, the same ones `yt sources` prints.
-const GLYPHS = {channel:"▸", course:"◆", live:"●", playlist:"▤"};
+const GLYPHS = {channel:"▸", course:"◆", live:"●", playlist:"▤", picks:"✦"};
 const glyph = s => GLYPHS[s.kind === "channel" ? "channel" : s.section || "playlist"];
 
 function buildPicker(sources, colls) {

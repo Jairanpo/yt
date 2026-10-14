@@ -736,6 +736,7 @@ After that it displays in full, and a later approximation can't overwrite it.
 | Command | What it does |
 | --- | --- |
 | `yt add <@handle\|url\|PL…>` | Track a channel or playlist and catalog it. `--limit N` for just the newest N. |
+| `yt add <video link>` | Add one video, unlisted ones too. It goes in that channel's ✦ Picked videos, in the order you add them, and `yt sync` keeps it fresh. |
 | `yt sync [source]` | Refresh catalogs; never downloads on its own. `--show-new`, `--limit N`, `--tidy [-y]` to delete videos that left every source, files included. `--shelved` includes shelved sources. |
 | `yt list [source]` | Browse. `-c COLLECTION`, `-q TEXT`, `-n N`, `--downloaded`, `--missing`, `--starred`, `--unwatched`, `--hidden`, `--sort KEY [--save]`. |
 | `yt get <id\|phrase>` | Download. Also `--starred`, `--latest N`, `--source X`, `-c COLLECTION`, `--audio`. |

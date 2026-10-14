@@ -56,9 +56,61 @@ def _channel_base(ref: str) -> str:
     return _TAB_RE.sub("", ref)
 
 
+# One video, by any of the links YouTube hands out for it. A link that also
+# names a playlist (watch?v=...&list=PL...) is taken as that playlist.
+_VIDEO_URL_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|live/|embed/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})")
+# Videos picked one link at a time have no listing on YouTube to page through,
+# unlisted ones least of all. Their ids live in this URL instead, which is
+# also a real YouTube address that plays them in a row.
+PICKS_URL = "https://www.youtube.com/watch_videos?video_ids="
+PICKS_PREFIX = "PICKS:"
+
+
+def video_id(ref: str):
+    """The id of the one video a link points at, or None."""
+    if "list=" in ref:
+        return None
+    m = _VIDEO_URL_RE.search(ref.strip())
+    return m.group(1) if m else None
+
+
+def picks_url(ids) -> str:
+    return PICKS_URL + ",".join(dict.fromkeys(ids))
+
+
+def picked_ids(url: str) -> list:
+    if not (url or "").startswith(PICKS_URL):
+        return []
+    return [v for v in url[len(PICKS_URL):].split(",") if _ID_RE.match(v)]
+
+
+def is_picks(url: str) -> bool:
+    return (url or "").startswith(PICKS_URL)
+
+
+def merge_picks(old_url, new_url, entries) -> str:
+    """The channel's picks so far, with the new one on the end.
+
+    Renumbers `entries` to their place in the whole list, so a pick lands
+    after the ones before it rather than at the top.
+    """
+    url = picks_url(picked_ids(old_url) + picked_ids(new_url))
+    order = picked_ids(url)
+    for e in entries:
+        e["position"] = order.index(e["id"])
+    return url
+
+
 def source_url(ref: str) -> str:
     """Normalise whatever the user typed into a URL we can page through."""
     ref = ref.strip().rstrip("/")
+    if is_picks(ref):
+        return ref
+    vid = video_id(ref)
+    if vid:
+        return picks_url([vid])
     if ref.startswith(("PL", "UU", "OLAK")):
         return f"https://www.youtube.com/playlist?list={ref}"
     if "list=" in ref:
@@ -76,7 +128,7 @@ channel_url = source_url
 
 
 def url_kind(url: str) -> str:
-    return "playlist" if "list=" in url else "channel"
+    return "playlist" if "list=" in url or is_picks(url) else "channel"
 
 
 def is_index(url: str) -> bool:
@@ -191,6 +243,8 @@ def sync_source(cfg: dict, url: str, limit=None):
     order the listing gave them: newest-first for a channel, curated order for
     a playlist.
     """
+    if is_picks(url):
+        return _sync_picks(cfg, picked_ids(url))
     kind = url_kind(url)
     cmd = base_cmd(cfg) + [
         "--flat-playlist", "--dump-json", "--ignore-errors",
@@ -273,6 +327,54 @@ def sync_source(cfg: dict, url: str, limit=None):
         )
     if not meta.get("source_id"):
         meta["source_id"] = _list_id(url) or url
+    return meta, entries
+
+
+def _sync_picks(cfg: dict, ids: list):
+    """Full metadata for hand-picked videos. Returns (meta, entries) as
+    sync_source does, filed under one per-channel source.
+
+    Costs a request per video rather than one per hundred, which is fine for
+    a handful picked by hand -- and in return the dates are exact.
+    """
+    cmd = base_cmd(cfg) + ["--dump-json", "--skip-download", "--no-playlist",
+                           "--ignore-errors"]
+    proc = subprocess.run(cmd + [f"https://www.youtube.com/watch?v={v}" for v in ids],
+                          capture_output=True, text=True)
+    infos = {}
+    for line in proc.stdout.splitlines():
+        if line.strip().startswith("{"):
+            try:
+                info = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            infos[info.get("id")] = info
+    if not infos:
+        raise YtdlpError(f"could not read {', '.join(ids)}\n"
+                         f"{(proc.stderr or '').strip()[:800]}")
+    first = next(iter(infos.values()))
+    cid = first.get("channel_id")
+    owner = first.get("channel") or first.get("uploader")
+    meta = {"kind": "playlist", "source_id": PICKS_PREFIX + (cid or first["id"]),
+            "name": "Picked videos", "owner": owner, "handle": _handle_from(first),
+            "channel_id": cid, "section": "picks"}
+    entries = []
+    for pos, vid in enumerate(ids):
+        info = infos.get(vid)
+        if info is None:
+            # Gone private or deleted since it was picked: keep the slot,
+            # hidden, the way a playlist keeps one.
+            entries.append({"id": vid, "unavailable": True, "title": vid,
+                            "duration": None, "description": None,
+                            "upload_date": None, "date_approx": 0, "position": pos})
+            continue
+        entries.append({
+            "id": vid, "unavailable": False, "title": info.get("title") or vid,
+            "duration": int(info["duration"]) if info.get("duration") else None,
+            "description": info.get("description") or None,
+            "upload_date": _fmt_date(info.get("upload_date")),
+            "date_approx": 0, "position": pos,
+        })
     return meta, entries
 
 

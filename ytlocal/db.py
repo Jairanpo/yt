@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS sources (
     name        TEXT,
     owner       TEXT,               -- for playlists: the channel that owns it
     channel_id  TEXT,               -- the UC... id it hangs under; a channel's own
-    section     TEXT,               -- playlists: 'course' | 'live' | NULL (plain)
+    section     TEXT,               -- playlists: 'course' | 'live' | 'picks' | NULL (plain)
     -- Put away for later: still tracked, still browsable by name, but out of
     -- the picker, out of Everything and out of a full sync until you want it.
     shelved     INTEGER NOT NULL DEFAULT 0,
@@ -346,7 +346,7 @@ def mark_courses(conn, ids) -> None:
 
 
 # Within a creator: the channel itself, then courses, live, plain playlists.
-_SECTION_RANK = {"course": 1, "live": 2, None: 3}
+_SECTION_RANK = {"course": 1, "live": 2, None: 3, "picks": 4}
 
 
 def by_creator(rows) -> list:
@@ -416,6 +416,11 @@ def find_source(conn, needle: str):
                OR lower(handle) LIKE ? OR lower(name) LIKE ? OR lower(url) LIKE ?
             ORDER BY (lower(name) = ?) DESC, length(COALESCE(name, url)) LIMIT 1""",
         (n, n, n, f"%{n}%", f"%{n}%", f"%{n}%", n)).fetchone()
+
+
+def source_url(conn, sid: str):
+    row = conn.execute("SELECT url FROM sources WHERE id = ?", (sid,)).fetchone()
+    return row[0] if row else None
 
 
 def mark_synced(conn, sid: str) -> None:

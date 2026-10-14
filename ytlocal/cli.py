@@ -117,14 +117,25 @@ def add_source(cfg, conn, ref, limit=None, quiet=False, section=None):
     meta, entries = ytdlp.sync_source(cfg, url, limit=limit)
     sid = meta["source_id"]
     kind = meta.get("kind", kind)
+    picked = ytdlp.is_picks(url)
+    if picked:
+        # One more video for that channel's picks, not a list of its own.
+        url = ytdlp.merge_picks(db.source_url(conn, sid), url, entries)
     db.upsert_source(conn, sid, url, kind, meta.get("name"),
                      meta.get("handle"), meta.get("owner"),
                      meta.get("channel_id"), section or meta.get("section"))
-    new, total, _ = db.upsert_videos(conn, sid, entries, prune=limit is None)
+    new, total, _ = db.upsert_videos(conn, sid, entries,
+                                     prune=limit is None and not picked)
     db.mark_synced(conn, sid)
     # Adding something again is asking to see it, so it comes off the shelf.
     back = db.set_shelved(conn, [sid], False)
     name = meta.get("name") or meta.get("handle") or sid
+    if picked:
+        owner = f" {C['dim']}({meta['owner']}){C['r']}" if meta.get("owner") else ""
+        out(f"{C['ok']}added{C['r']} {C['b']}{entries[0]['title']}{C['r']} to "
+            f"{name}{owner} — {len(ytdlp.picked_ids(url))} picked so far. "
+            f"Nothing downloaded yet.")
+        return sid, kind
     label = (section or meta.get("section") or kind).replace("live", "live streams")
     owner = f" {C['dim']}({meta['owner']}){C['r']}" if meta.get("owner") else ""
     out(f"{C['ok']}added{C['r']} {label} {C['b']}{name}{C['r']}{owner} — "
@@ -145,7 +156,9 @@ def cmd_add(args, cfg, conn):
         die(f"{args.source} is a creator's playlist index, not a single source.\n"
             f"       pick from it with:  yt playlists {args.source}")
     name, kind = add_source(cfg, conn, args.source, limit=args.limit)
-    if kind == "playlist":
+    if ytdlp.video_id(args.source):
+        out(f"{C['dim']}yt list \"{name}\" to see them in the order you added them{C['r']}")
+    elif kind == "playlist":
         out(f"{C['dim']}listed in the playlist's own order; "
             f"yt list \"{name}\" to see it{C['r']}")
     else:
@@ -264,7 +277,7 @@ def _report_orphans(args, conn, scope):
 
 
 # One mark per kind of source, the same everywhere a source is listed.
-GLYPHS = {"channel": "▸", "course": "◆", "live": "●", "playlist": "▤"}
+GLYPHS = {"channel": "▸", "course": "◆", "live": "●", "playlist": "▤", "picks": "✦"}
 SECTION_NAMES = {"course": "courses", "live": "live", "playlist": "playlists"}
 
 
@@ -1024,8 +1037,9 @@ def build_parser():
             """))
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    a = sub.add_parser("add", help="track a channel or playlist and catalog it")
-    a.add_argument("source", help="@handle, channel URL, playlist URL, or PL... id")
+    a = sub.add_parser("add", help="track a channel or playlist, or add one video")
+    a.add_argument("source", help="@handle, channel URL, playlist URL, PL... id, "
+                                  "or a video link (unlisted ones too)")
     a.add_argument("--limit", type=int, help="only catalog the newest N")
     a.set_defaults(fn=cmd_add)
 

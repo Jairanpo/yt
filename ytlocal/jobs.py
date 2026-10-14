@@ -158,18 +158,23 @@ class Cataloguer(_Queue):
                 job.detail = f"{len(entries)} found — filing"
                 sid = meta["source_id"]
                 conn = db.connect()
+                picked = ytdlp.is_picks(url)
+                if picked:
+                    # One more video for that channel's picks.
+                    url = ytdlp.merge_picks(db.source_url(conn, sid), url, entries)
                 db.upsert_source(conn, sid, url, meta.get("kind") or ytdlp.url_kind(url),
                                  meta.get("name"), meta.get("handle"),
                                  meta.get("owner"), meta.get("channel_id"),
                                  section or meta.get("section"))
                 new, total, _ = db.upsert_videos(conn, sid, entries,
-                                                 prune=limit is None)
+                                                 prune=limit is None and not picked)
                 db.mark_synced(conn, sid)
                 # Adding something again is asking to see it: off the shelf.
                 db.set_shelved(conn, [sid], False)
                 # Now that it has a name, the card can stop calling it by
                 # whatever was typed into the box.
-                job.title = meta.get("name") or meta.get("handle") or sid
+                job.title = (entries[0]["title"] if picked
+                             else meta.get("name") or meta.get("handle") or sid)
                 job.result = {"source_id": sid, "kind": meta.get("kind"),
                               "name": job.title, "new": new, "total": total}
                 job.state, job.fraction = "done", 1.0
