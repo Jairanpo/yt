@@ -284,7 +284,8 @@ back together with the browser's MediaSource. Each file opens with an index of
 where every few seconds start; the page reads it and fetches only the next
 minute or so around the playhead, which is what makes seeking instant.
 
-Under the title, the player lists every height YouTube offers for that video.
+Under the title, the player lists every height YouTube offers for that video
+(above 1080p the picture is AV1, offered only if the browser can decode it).
 Picking one restarts the stream at the same moment, and the choice sticks as a
 ceiling for later videos (a video without that height plays the next one
 down). Until you pick, streams start at `max_height`. Speed buttons sit beside

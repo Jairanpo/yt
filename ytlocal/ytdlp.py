@@ -482,13 +482,22 @@ def stream_info(cfg: dict, vid: str) -> dict:
         return {"url": f["url"], "headers": f.get("http_headers") or {},
                 "mime": f'{kind}/mp4; codecs="{codec}"', "size": f.get("filesize")}
 
+    # H.264 stops at 1080p; above that YouTube only has AV1 (and VP9, which
+    # comes in webm, whose index the page cannot read). AV1 in mp4 has the same
+    # sidx index, so it fills the taller heights, but only where H.264 is
+    # missing: it is much harder on older machines.
     best = {}
     for f in info.get("formats") or []:
+        vcodec = str(f.get("vcodec") or "")
         if (f.get("ext") == "mp4" and f.get("protocol") == "https"
-                and str(f.get("vcodec") or "").startswith("avc1")
+                and vcodec.startswith(("avc1", "av01"))
                 and f.get("acodec") in (None, "none") and f.get("height")):
-            # Several files can share a height (30 vs 60 fps); keep the richest.
-            rank = (f.get("fps") or 0, f.get("tbr") or 0)
+            # Several files can share a height: H.264 over AV1, then normal
+            # colour over HDR (some videos have AV1 only in HDR), then the
+            # richest (60 over 30 fps).
+            rank = (vcodec.startswith("avc1"),
+                    f.get("dynamic_range") in (None, "SDR"),
+                    f.get("fps") or 0, f.get("tbr") or 0)
             if f["height"] not in best or rank > best[f["height"]][0]:
                 best[f["height"]] = (rank, f)
     audio = [f for f in info.get("requested_formats") or []

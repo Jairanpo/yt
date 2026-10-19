@@ -992,13 +992,16 @@ async function startStream(v, vid, paused = false) {
   const me = stream = {alive: true, tracks: []};
   streamStatus("Finding the stream…");
   const meta = await api(`/api/stream/${v.id}`);
-  const heights = Object.keys(meta.videos).map(Number).sort((a, b) => a - b);
-  const fit = heights.filter(x => x <= quality);
-  const h = quality ? (fit.length ? fit[fit.length - 1] : heights[0]) : meta.default;
+  // Above 1080p the picture is AV1, which some browsers cannot decode;
+  // those heights are simply not offered.
+  const heights = Object.keys(meta.videos).map(Number).sort((a, b) => a - b)
+                        .filter(x => MediaSource.isTypeSupported(meta.videos[x]));
+  if (!heights.length) throw new Error("this browser cannot play any of its video");
+  if (!MediaSource.isTypeSupported(meta.audio))
+    throw new Error(`this browser cannot play ${meta.audio}`);
+  const fit = heights.filter(x => x <= (quality || meta.default));
+  const h = fit.length ? fit[fit.length - 1] : heights[0];
   meta.video = meta.videos[h];
-  for (const k of ["video", "audio"])
-    if (!MediaSource.isTypeSupported(meta[k]))
-      throw new Error(`this browser cannot play ${meta[k]}`);
   if (!me.alive) return;
   paintQuality(v, heights, h);
   showChapters(meta.chapters, v.id);
