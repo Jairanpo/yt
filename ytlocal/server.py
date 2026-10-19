@@ -415,13 +415,13 @@ class Handler(BaseHTTPRequestHandler):
              "creator": g["creator"] or s["creator"], "handle": s["handle"],
              "group": g["key"], "owner": s["owner"],
              "shelved": bool(s["shelved"]),
-             "total": s["n_total"], "have": s["n_have"]}
+             "total": s["n_total"], "have": s["n_have"], "seen": s["n_seen"]}
             for g in db.by_creator(db.sources(self.conn))
             for s in ([g["channel"]] if g["channel"] else []) + g["items"]
         ]
         colls = [
             {"id": c["id"], "name": c["name"], "total": c["n_total"],
-             "have": c["n_have"]}
+             "have": c["n_have"], "seen": c["n_seen"]}
             for c in db.collections(self.conn)
         ]
         # A playlist or collection is shown in its own order, so the UI must not
@@ -554,6 +554,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._fail(502, str(exc))
         if db.get_video(self.conn, vid):
             db.set_chapters(self.conn, vid, info["chapters"])
+            # Catalogue listings often lack a length, and without one a
+            # streamed video's card cannot show how far in you are.
+            db.fill_duration(self.conn, vid, info["duration"])
         return self._json({"duration": info["duration"],
                            "chapters": info["chapters"],
                            "videos": {h: t["mime"] for h, t in info["videos"].items()},

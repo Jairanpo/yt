@@ -317,7 +317,10 @@ def sources(conn, kind=None) -> list:
                     AS n_total,
                 (SELECT COUNT(*) FROM source_videos sv JOIN videos v ON v.id = sv.video_id
                   WHERE sv.source_id = s.id AND v.downloaded_path IS NOT NULL)
-                    AS n_have
+                    AS n_have,
+                (SELECT COUNT(*) FROM source_videos sv JOIN videos v ON v.id = sv.video_id
+                  WHERE sv.source_id = s.id AND v.watched)
+                    AS n_seen
                FROM sources s"""
     args = []
     if kind:
@@ -647,6 +650,14 @@ def set_chapters(conn, vid: str, chapters: list) -> None:
     conn.commit()
 
 
+def fill_duration(conn, vid: str, duration) -> None:
+    """Learned while streaming; a length already known is left alone."""
+    if duration:
+        conn.execute("UPDATE videos SET duration = ? WHERE id = ? AND duration IS NULL",
+                     (int(duration), vid))
+        conn.commit()
+
+
 def set_flag(conn, vid: str, field: str, value) -> None:
     assert field in {"starred", "watched", "progress", "hidden"}
     extra = ", watched_at = ?" if field == "watched" else ""
@@ -665,7 +676,10 @@ def collections(conn) -> list:
                   (SELECT COUNT(*) FROM collection_items ci JOIN videos v
                           ON v.id = ci.video_id
                     WHERE ci.collection_id = c.id
-                      AND v.downloaded_path IS NOT NULL) AS n_have
+                      AND v.downloaded_path IS NOT NULL) AS n_have,
+                  (SELECT COUNT(*) FROM collection_items ci JOIN videos v
+                          ON v.id = ci.video_id
+                    WHERE ci.collection_id = c.id AND v.watched) AS n_seen
              FROM collections c ORDER BY c.name""").fetchall()
 
 

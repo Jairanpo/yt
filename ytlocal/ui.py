@@ -64,8 +64,21 @@ PAGE = r"""<!doctype html>
   .card.gone .thumbwrap { background:repeating-linear-gradient(45deg,
       #26262c, #26262c 8px, #2c2c33 8px, #2c2c33 16px); cursor:default; }
   .card.gone .thumbwrap img, .card.gone .title { opacity:.5; }
-  .flag.seen { left:auto; right:6px; bottom:6px; top:auto; background:rgba(0,0,0,.72);
-               color:#cfcbc2; }
+  /* Watched: a green tick in the thumbnail's middle, big enough to read the
+     state of a whole course at a glance. */
+  .flag.seen { left:50%; top:50%; transform:translate(-50%,-50%); width:46px;
+               height:46px; padding:0; border-radius:50%; display:grid;
+               place-items:center; background:var(--ok); color:#fff;
+               font-size:26px; font-weight:700; box-shadow:0 2px 10px rgba(0,0,0,.5); }
+  .flag.seen[hidden] { display:none; }
+  .card.watched .bar i { background:var(--ok); }
+  /* How much of the open channel, playlist or collection you have watched. */
+  #viewprog { display:flex; align-items:center; gap:8px; color:var(--dim);
+              font-size:12.5px; white-space:nowrap; }
+  #viewprog[hidden] { display:none; }
+  #viewprog .track { width:90px; height:6px; border-radius:3px;
+                     background:rgba(127,127,127,.25); overflow:hidden; }
+  #viewprog .track i { display:block; height:100%; background:var(--ok); }
   .bar { position:absolute; left:0; right:0; bottom:0; height:3px;
          background:rgba(255,255,255,.18); }
   .bar i { display:block; height:100%; background:var(--accent); }
@@ -299,6 +312,7 @@ PAGE = r"""<!doctype html>
   <button class="chip" id="newcoll" title="New collection">＋ collection</button>
   <button class="chip" id="togglcfg"
           title="How each channel shows up in Toggl Track">⏱ toggl</button>
+  <div id="viewprog" hidden><span class="track"><i></i></span><span></span></div>
   <div class="stats" id="stats"></div>
 </header>
 <main>
@@ -441,6 +455,7 @@ async function refresh(opts) {
     `${s.channels} channels · ${s.playlists} playlists` +
     (s.hidden ? ` · ${s.hidden} hidden` : "");
   render(d.videos);
+  paintViewProgress();
   renderJobs(d.jobs);
 }
 
@@ -634,6 +649,25 @@ function render(vs) {
   paintFold();
 }
 
+function paintViewProgress() {
+  const it = state.source ? state.sources.find(s => s.id === state.source)
+           : state.collection ? state.collections.find(c => String(c.id) === String(state.collection))
+           : null;
+  const box = $("#viewprog");
+  box.hidden = !it || !it.total;
+  if (box.hidden) return;
+  box.querySelector("i").style.width = `${100 * it.seen / it.total}%`;
+  box.lastChild.textContent = `✓ ${it.seen} of ${it.total} watched`;
+}
+
+// A tick or an undo changes the count without a full reload.
+function bumpSeen(by) {
+  const it = state.source ? state.sources.find(s => s.id === state.source)
+           : state.collections.find(c => String(c.id) === String(state.collection));
+  if (it) it.seen = Math.max(0, it.seen + by);
+  paintViewProgress();
+}
+
 function paintFold() {
   $("#foldbar").setAttribute("aria-expanded", String(foldOpen));
   $("#foldhint").textContent = foldOpen ? "hide" : "show";
@@ -676,6 +710,7 @@ function seenRow(v) {
     e.stopPropagation();
     const r = await post(`/api/watched/${v.id}`);
     v.watched = r.watched;
+    bumpSeen(r.watched ? 1 : -1);
     moveOut(el, "rising");
   };
   el.appendChild(back);
@@ -686,7 +721,8 @@ function card(v, seq) {
   const el = document.createElement("div");
   el.className = "card" + (v.watched ? " watched" : "")
                         + (v.unavailable ? " gone" : "");
-  const pct = v.have && v.duration && v.progress
+  // Streamed videos keep their place too, so any video can show a bar.
+  const pct = v.watched ? 100 : v.duration && v.progress
               ? Math.min(100, 100 * v.progress / v.duration) : 0;
   el.innerHTML = `
     <div class="thumbwrap">
@@ -695,8 +731,7 @@ function card(v, seq) {
       ${v.have ? `<span class="flag have" style="${seq ? 'left:auto;right:6px' : ''}">${v.audio ? "audio ♪" : "on disk"}</span>` : ''}
       ${v.starred ? '<span class="flag" style="left:auto;right:6px;top:6px">★</span>' : ''}
       ${v.duration ? `<span class="badge">${fmtDur(v.duration)}</span>` : ''}
-      <span class="flag seen" style="${v.duration ? 'bottom:26px' : ''}"
-            ${v.watched ? '' : 'hidden'}>watched</span>
+      <span class="flag seen" title="Watched" ${v.watched ? '' : 'hidden'}>✓</span>
       ${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}
     </div>
     <div class="meta">
@@ -771,6 +806,7 @@ function card(v, seq) {
   seen.onclick = async () => {
     const r = await post(`/api/watched/${v.id}`);
     v.watched = r.watched;
+    bumpSeen(r.watched ? 1 : -1);
     paintSeen();
     // The Unwatched filter is showing a list this video may have just left.
     if (state.unwatched) { refresh(); return; }
