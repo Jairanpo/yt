@@ -491,7 +491,9 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             return self._fail(404, "unknown video")
         if action == "get":
-            job = self.server.dl.enqueue(vid, row["title"], bool(body.get("audio")))
+            h = body.get("height")
+            job = self.server.dl.enqueue(vid, row["title"], bool(body.get("audio")),
+                                         None if h is None else int(h))
             return self._json({"ok": True, "job": job.as_dict()})
         if action == "star":
             val = 0 if row["starred"] else 1

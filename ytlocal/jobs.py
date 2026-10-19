@@ -90,15 +90,15 @@ class Downloader(_Queue):
         self.cfg, self.media_dir = cfg, media_dir
         super().__init__(workers, "dl")
 
-    def enqueue(self, vid, title, audio_only=False):
+    def enqueue(self, vid, title, audio_only=False, height=None):
         job, fresh = self._claim(vid, title, "download")
         if fresh:
-            self.q.put((job, audio_only))
+            self.q.put((job, audio_only, height))
         return job
 
     def _worker(self):
         while True:
-            job, audio_only = self.q.get()
+            job, audio_only, height = self.q.get()
             conn = None
             try:
                 job.state, job.detail = "running", "starting"
@@ -107,11 +107,14 @@ class Downloader(_Queue):
                     _job.fraction, _job.detail = frac, text
 
                 res = ytdlp.download(self.cfg, job.vid, self.media_dir,
-                                     audio_only=audio_only, on_progress=progress)
+                                     audio_only=audio_only, on_progress=progress,
+                                     height=height)
                 size = res["path"].stat().st_size if res["path"].exists() else None
                 # Each worker opens its own connection; sqlite objects are not
                 # safe to share across threads.
                 conn = db.connect()
+                old = db.get_video(conn, job.vid)
+                ytdlp.drop_old_copy(old and old["downloaded_path"], res["path"])
                 db.set_downloaded(conn, job.vid, res["path"], size,
                                   res.get("upload_date"), res.get("description"),
                                   res.get("duration"))

@@ -124,7 +124,10 @@ PAGE = r"""<!doctype html>
            display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
            overflow:hidden; }
   .sub { color:var(--dim); font-size:12.5px; }
-  .row { display:flex; gap:6px; margin-top:auto; padding-top:4px; }
+  .row { display:flex; flex-wrap:wrap; gap:4px; margin-top:auto; padding-top:4px; }
+  /* Icons take their own width; the main button gets what is left. */
+  .row button.act.icon { flex:0 0 auto; width:24px; padding-left:0; padding-right:0; }
+  .row button.act.primary { padding-left:6px; padding-right:6px; }
   button.act { flex:1; border:1px solid var(--edge); background:transparent;
                color:var(--ink); border-radius:6px; padding:5px 8px; font-size:12.5px;
                cursor:pointer; }
@@ -248,6 +251,14 @@ PAGE = r"""<!doctype html>
   #pmarks .note:focus { border-color:#f2c14e; outline:none; color:#e9e7e3; }
   #pmarks .x { background:none; border:none; color:#9b988f; cursor:pointer; font-size:16px; }
   #pmarks .x:hover { color:#e9e7e3; }
+  #qmenu { position:fixed; z-index:70; background:var(--panel); border:1px solid var(--edge);
+           border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.25); padding:4px;
+           display:flex; flex-direction:column; min-width:190px; }
+  #qmenu .qh { color:var(--dim); font-size:12px; padding:4px 8px 6px; }
+  #qmenu button { background:none; border:none; color:var(--ink); font:inherit;
+                  font-size:13.5px; text-align:left; padding:5px 8px; border-radius:5px;
+                  cursor:pointer; }
+  #qmenu button:hover { background:var(--accent); color:#fff; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
   /* The Toggl timer, when a token is configured. Without one the whole row
@@ -951,6 +962,14 @@ function card(v, seq) {
   main.disabled = v.unavailable && !v.have;
   row.appendChild(main);
 
+  if (!v.unavailable) {
+    const q = document.createElement("button");
+    q.className = "act icon"; q.textContent = "▾";
+    q.title = v.have ? "Download again at another quality" : "Download at a chosen quality";
+    q.onclick = e => { e.stopPropagation(); qualityMenu(v, q, main); };
+    row.appendChild(q);
+  }
+
   if (!v.have && !v.unavailable) {
     const play = document.createElement("button");
     play.className = "act icon";
@@ -958,13 +977,6 @@ function card(v, seq) {
     play.title = "Stream it now — nothing is saved to disk";
     play.onclick = () => open_(v);
     row.appendChild(play);
-
-    const aud = document.createElement("button");
-    aud.className = "act icon";
-    aud.textContent = "♪";
-    aud.title = "Download the audio only (m4a) — a fraction of the size";
-    aud.onclick = () => grab(v, aud, true);
-    row.appendChild(aud);
   }
 
   const hide = document.createElement("button");
@@ -1036,13 +1048,51 @@ function card(v, seq) {
   return el;
 }
 
-async function grab(v, btn, audio) {
+async function grab(v, btn, audio, height) {
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Queued…";
   dismissed.delete(v.id);
-  try { await post(`/api/get/${v.id}`, {audio: !!audio}); pollJobs(); }
+  const body = {audio: !!audio};
+  if (height != null) body.height = height;
+  try { await post(`/api/get/${v.id}`, body); pollJobs(); }
   catch (e) { btn.disabled = false; btn.textContent = label; alert(e.message); }
 }
+
+// Each height is a ceiling: a video without 1440p comes down at the next
+// size below. Above 1080p the file is VP9 or AV1 -- sharper text in screen
+// recordings, heavier to play on an old machine.
+const DL_QUALITIES = [["Best available", 0], ["4K (2160p)", 2160], ["1440p", 1440],
+                      ["1080p", 1080], ["720p", 720], ["480p", 480]];
+function qualityMenu(v, anchor, mainBtn) {
+  closeQualityMenu();
+  const m = document.createElement("div");
+  m.id = "qmenu";
+  const head = document.createElement("div");
+  head.className = "qh";
+  head.textContent = v.have ? "Download again at… (replaces the file)" : "Download at…";
+  m.appendChild(head);
+  for (const [label, h] of DL_QUALITIES) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = () => { closeQualityMenu(); grab(v, mainBtn, false, h); };
+    m.appendChild(b);
+  }
+  if (!v.have) {
+    const b = document.createElement("button");
+    b.textContent = "♪ Audio only (m4a)";
+    b.title = "A fraction of the size";
+    b.onclick = () => { closeQualityMenu(); grab(v, mainBtn, true); };
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect();
+  m.style.left = `${Math.min(r.left, innerWidth - m.offsetWidth - 8)}px`;
+  m.style.top = r.bottom + m.offsetHeight + 8 > innerHeight
+    ? `${r.top - m.offsetHeight - 4}px` : `${r.bottom + 4}px`;
+}
+function closeQualityMenu() { $("#qmenu")?.remove(); }
+document.addEventListener("click", e => { if (!e.target.closest("#qmenu")) closeQualityMenu(); });
+addEventListener("scroll", closeQualityMenu, {passive: true});
 
 /* ---- player ---- */
 let current = null, saveTimer = null;

@@ -454,15 +454,30 @@ def chapters(info: dict) -> list:
 
 
 def format_selector(max_height: int, audio_only=False) -> str:
+    """max_height 0 means the best there is."""
     if audio_only:
         return "bestaudio[ext=m4a]/bestaudio"
     h = int(max_height)
+    if not h or h > 1080:
+        # H.264 stops at 1080p, so a sharper picture means VP9 or AV1. Merged
+        # into mp4 the browser still plays it as is; screen recordings with
+        # small text are what this is for.
+        hq = f"[height<=?{h}]" if h else ""
+        return f"bv*{hq}+ba[ext=m4a]/bv*{hq}+ba/b{hq}/b"
     # Prefer mp4/m4a so the <video> tag in the web UI plays it without transcoding.
     return (
         f"bv*[height<=?{h}][ext=mp4]+ba[ext=m4a]/"
         f"b[height<=?{h}][ext=mp4]/"
         f"bv*[height<=?{h}]+ba/b[height<=?{h}]/b"
     )
+
+
+def download_sort(max_height: int) -> str:
+    # Among files of the same size: normal colour over HDR (washed out on most
+    # screens), whole files over HLS pieces, and up to 1080p H.264, which
+    # every machine decodes without effort.
+    h = int(max_height)
+    return "res,fps,hdr:sdr,proto" + (",vcodec:h264" if h and h <= 1080 else "")
 
 
 def stream_selector(max_height: int) -> str:
@@ -527,6 +542,15 @@ def stream_info(cfg: dict, vid: str) -> dict:
             "default": fit[-1] if fit else min(videos)}
 
 
+def drop_old_copy(old, new) -> None:
+    """After a re-download, the previous file if it was named differently."""
+    if old and Path(old) != Path(new):
+        try:
+            Path(old).unlink()
+        except OSError:
+            pass
+
+
 def output_template(media_dir: Path) -> str:
     return str(media_dir / (
         "%(channel,uploader|Unknown)s/"
@@ -536,17 +560,23 @@ def output_template(media_dir: Path) -> str:
 
 
 def download(cfg: dict, vid: str, media_dir: Path, audio_only=False,
-             on_progress=None) -> dict:
+             on_progress=None, height=None) -> dict:
     """Download one video. Returns {path, upload_date, duration, description}.
 
-    on_progress(fraction|None, human_str) is called as bytes land.
+    on_progress(fraction|None, human_str) is called as bytes land. height caps
+    the picture (0 = best there is); None means max_height from config.
     """
+    h = cfg["max_height"] if height is None else int(height)
     sink = Path(tempfile.mkstemp(prefix="ytlocal-", suffix=".tsv")[1])
     try:
         cmd = base_cmd(cfg) + [
             "--no-simulate", "--newline", "--no-playlist",
-            "-f", format_selector(cfg["max_height"], audio_only),
+            "-f", format_selector(h, audio_only),
+            "-S", download_sort(h),
             "-o", output_template(media_dir),
+            # Asking again at another quality replaces the copy on disk
+            # rather than finding it there and stopping.
+            "--force-overwrites",
             "--restrict-filenames",
             "--no-mtime",
             "--retries", "5", "--fragment-retries", "10",

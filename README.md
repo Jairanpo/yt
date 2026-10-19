@@ -248,9 +248,13 @@ and `yt serve --status` never lies about a server that isn't there.
   anything not yet downloaded, [streams it](#streaming) instead, and so does
   clicking the thumbnail or title. **☆** stars, **✓** marks it
   watched and **↺** puts it back in the queue, **⊘** hides it, **✕** deletes
-  the file (with a confirm) and keeps the catalog entry. **♪**, on anything not yet downloaded, fetches the
-  audio alone. A watched card dims its thumbnail and flags itself *watched*; an
-  audio-only one flags itself *audio ♪*.
+  the file (with a confirm) and keeps the catalog entry. **▾** picks the quality:
+  *Best available*, 4K, 1440p down to 480p, or *♪ Audio only*. On a video
+  already on disk it downloads again at that quality and replaces the file —
+  for screen recordings whose text is mush at 1080p. Above 1080p the file is
+  VP9 or AV1 (H.264 stops at 1080p); `yt get <video> --quality best` does the
+  same from the terminal. A watched card dims its thumbnail and shows a green
+  ✓; an audio-only one flags itself *audio ♪*.
 - **Watched videos sink out of the way.** Marking one watched slides its card
   down into a **Watched · N** bar pinned to the bottom edge of the window, so
   what you have not got to yet keeps the top of the grid. The bar stays in

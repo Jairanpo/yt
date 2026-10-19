@@ -592,10 +592,12 @@ def cmd_status(args, cfg, conn):
 
 # --- downloading ----------------------------------------------------------
 
-def _download_now(cfg, conn, rows, audio_only=False):
+def _download_now(cfg, conn, rows, audio_only=False, height=None):
     media = config.media_dir(cfg)
     for i, v in enumerate(rows, 1):
-        if v["downloaded_path"] and Path(v["downloaded_path"]).exists():
+        # Naming a quality is asking for a new copy, even of one on disk.
+        if (height is None and v["downloaded_path"]
+                and Path(v["downloaded_path"]).exists()):
             out(f"{C['dim']}have already:{C['r']} {v['title']}")
             continue
         out(f"{C['acc']}↓{C['r']} [{i}/{len(rows)}] {v['title'][:60]}")
@@ -605,7 +607,7 @@ def _download_now(cfg, conn, rows, audio_only=False):
                 print(f"\r   {text:<60}", end="", file=sys.stderr, flush=True)
 
         try:
-            res = ytdlp.download(cfg, v["id"], media, audio_only, progress)
+            res = ytdlp.download(cfg, v["id"], media, audio_only, progress, height)
         except ytdlp.YtdlpError as exc:
             if sys.stderr.isatty():
                 print("\r" + " " * 66 + "\r", end="", file=sys.stderr)
@@ -614,6 +616,7 @@ def _download_now(cfg, conn, rows, audio_only=False):
         if sys.stderr.isatty():
             print("\r" + " " * 66 + "\r", end="", file=sys.stderr)
         size = res["path"].stat().st_size if res["path"].exists() else None
+        ytdlp.drop_old_copy(v["downloaded_path"], res["path"])
         db.set_downloaded(conn, v["id"], res["path"], size, res.get("upload_date"),
                           res.get("description"), res.get("duration"))
         out(f"{C['ok']}   ✓{C['r']} {human_size(size)}  {C['dim']}{res['path']}{C['r']}")
@@ -652,7 +655,11 @@ def cmd_get(args, cfg, conn):
             die("give a video id, a search phrase, or one of "
                 "--starred / --latest N / --source X / --collection X")
         rows = [_resolve_or_die(conn, " ".join(args.target))]
-    _download_now(cfg, conn, rows, args.audio)
+    height = None
+    if args.quality:
+        q = args.quality.lower().rstrip("p")
+        height = 0 if q in ("best", "max") else 2160 if q == "4k" else int(q)
+    _download_now(cfg, conn, rows, args.audio, height)
 
 
 def cmd_watch(args, cfg, conn):
@@ -1107,6 +1114,9 @@ def build_parser():
     g = sub.add_parser("get", help="download video(s) to disk")
     g.add_argument("target", nargs="*", help="video id or search phrase")
     g.add_argument("--audio", action="store_true", help="audio only (m4a)")
+    g.add_argument("-q", "--quality", metavar="Q",
+                   help="best, 4k, 1440, 1080, 720... (default: max_height); "
+                        "also re-downloads one already on disk")
     g.add_argument("--starred", action="store_true", help="every starred video not on disk")
     g.add_argument("--latest", type=int, metavar="N", help="newest N not yet on disk")
     g.add_argument("--source", help="everything in a channel/playlist not on disk")
