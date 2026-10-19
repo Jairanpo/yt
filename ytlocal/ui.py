@@ -36,8 +36,13 @@ PAGE = r"""<!doctype html>
   /* Who the current view belongs to. A collapsed <select> shows only the
      option's own text, so the optgroup that carries the creator goes out of
      sight the moment you pick a playlist -- this keeps it on screen. */
-  .who-src { color:var(--dim); font-size:12.5px; max-width:32ch;
-             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .who-src { color:var(--dim); font-size:12.5px; max-width:40ch;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+             background:none; border:none; padding:0; font-family:inherit; }
+  .who-src[hidden] { display:none; }
+  /* With a handle known, the label opens that creator's other playlists. */
+  .who-src.more { cursor:pointer; }
+  .who-src.more:hover { color:var(--accent); }
   .stats { color:var(--dim); font-size:13px; margin-left:auto; }
   #shelve[hidden] { display:none; }
   main { padding:20px; }
@@ -279,7 +284,7 @@ PAGE = r"""<!doctype html>
   <div class="brand">yt<span>·</span>local</div>
   <input type="search" id="q" placeholder="Search titles and descriptions…" autocomplete="off">
   <select id="src"><option value="">Everything</option></select>
-  <span class="who-src" id="whosrc" hidden></span>
+  <button class="who-src" id="whosrc" hidden></button>
   <button class="chip" id="shelve" hidden></button>
   <select id="sort" title="Sort order (remembered per view)"></select>
   <div class="chips">
@@ -518,13 +523,25 @@ function paintWho(sources, colls) {
   if (src && src.kind === "playlist")
     text = glyph(src) + " " + (src.creator || "unknown creator");
   else if (src)
-    text = glyph(src) + " " + (src.handle || src.creator || src.name);
+    text = glyph(src) + " " + (src.creator || src.name);
   else if (state.collection)
     text = "yours";
+  const handle = src && src.handle;
+  if (handle) text += ` · ${handle} — more →`;
   el.textContent = text;
-  el.title = text && src ? `${src.name} — ${text.slice(2)}` : "";
+  el.classList.toggle("more", !!handle);
+  el.dataset.handle = handle || "";
+  el.title = handle ? `See ${handle}'s courses, live and playlists, and track more`
+                    : text && src ? src.name : "";
   el.hidden = !text;
 }
+$("#whosrc").onclick = () => {
+  const handle = $("#whosrc").dataset.handle;
+  if (!handle) return;
+  $("#newsrc").onclick();
+  $("#snew").value = handle;
+  browseSource();
+};
 
 // Only a source can be shelved; the button names what pressing it would do.
 function paintShelve(sources) {
