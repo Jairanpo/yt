@@ -548,21 +548,28 @@ class Handler(BaseHTTPRequestHandler):
             db.set_chapters(self.conn, vid, info["chapters"])
         return self._json({"duration": info["duration"],
                            "chapters": info["chapters"],
-                           "video": info["video"]["mime"],
+                           "videos": {h: t["mime"] for h, t in info["videos"].items()},
+                           "default": info["default"],
                            "audio": info["audio"]["mime"]})
 
     def _stream(self, rest):
+        # /stream/<id>/audio, or /stream/<id>/video/<height>
         vid, _, kind = rest.partition("/")
-        if not _ID_RE.match(vid) or kind not in ("video", "audio"):
+        kind, _, height = kind.partition("/")
+        if (not _ID_RE.match(vid) or kind not in ("video", "audio")
+                or (kind == "video") != height.isdigit()):
             return self._fail(400, "bad stream")
         rng = self.headers.get("Range") or ""
         if not _RANGE_RE.match(rng):
             return self._fail(400, "a byte range is required")
         for fresh in (False, True):
             try:
-                track = self.server.streams.get(vid, fresh=fresh)[kind]
+                info = self.server.streams.get(vid, fresh=fresh)
             except ytdlp.YtdlpError as exc:
                 return self._fail(502, str(exc))
+            track = info["audio"] if kind == "audio" else info["videos"].get(int(height))
+            if not track:
+                return self._fail(404, "no such quality")
             req = urllib.request.Request(track["url"],
                                          headers={**track["headers"], "Range": rng})
             try:

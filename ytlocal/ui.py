@@ -163,12 +163,13 @@ PAGE = r"""<!doctype html>
   #pchlist .ts { color:#9b988f; min-width:5ch; font-variant-numeric:tabular-nums; }
   /* Speed: the browser's own menu forgets it on every new video, so the
      choice lives here and follows you from one video to the next. */
-  #pspeed { display:flex; gap:4px; margin-top:8px; }
-  #pspeed button { background:none; border:1px solid rgba(233,231,227,.25);
+  #pspeed, #pquality { display:flex; gap:4px; margin-top:8px; }
+  #pquality[hidden] { display:none; }
+  #pspeed button, #pquality button { background:none; border:1px solid rgba(233,231,227,.25);
                    border-radius:6px; padding:2px 9px; font:inherit; font-size:12.5px;
                    color:#c3c0b8; cursor:pointer; font-variant-numeric:tabular-nums; }
-  #pspeed button:hover { border-color:var(--accent); color:var(--accent); }
-  #pspeed button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #pspeed button:hover, #pquality button:hover { border-color:var(--accent); color:var(--accent); }
+  #pspeed button.on, #pquality button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
   /* The Toggl timer, when a token is configured. Without one the whole row
@@ -373,6 +374,7 @@ PAGE = r"""<!doctype html>
   <div id="pmeta"><h2 id="ptitle"></h2><div class="sub" id="psub"></div>
     <div class="sub" id="pstatus" hidden></div>
     <div id="pspeed" title="Speed (Shift+&lt; / Shift+&gt;)"></div>
+    <div id="pquality" title="Streaming quality" hidden></div>
     <ol id="pchlist" hidden></ol>
     <div id="pdesc"></div></div>
 </div>
@@ -956,21 +958,56 @@ const buffered = (sb, s) => {
   return false;
 };
 
-async function startStream(v, vid) {
+// The quality you last picked, as a ceiling: a video without that height
+// plays at the tallest one below it. Nothing picked means config's max_height.
+let quality = null;
+try { quality = parseInt(localStorage.getItem("yt.quality")) || null; } catch (e) {}
+
+function paintQuality(v, heights, h) {
+  const box = $("#pquality");
+  box.replaceChildren(...heights.map(x => {
+    const b = document.createElement("button");
+    b.textContent = x + "p";
+    b.classList.toggle("on", x === h);
+    b.onclick = () => {
+      quality = x;
+      try { localStorage.setItem("yt.quality", x); } catch (e) {}
+      if (x !== h) switchQuality(v);
+    };
+    return b;
+  }));
+  box.hidden = false;
+}
+
+// Start over at the same moment, keeping play/pause as it was.
+function switchQuality(v) {
+  const vid = $("#pvideo"), paused = vid.paused;
+  stopStream();
+  startStream({...v, progress: vid.currentTime}, vid, paused).catch(e => {
+    if (current?.id === v.id) streamStatus(`Couldn't stream: ${e.message}`);
+  });
+}
+
+async function startStream(v, vid, paused = false) {
   const me = stream = {alive: true, tracks: []};
   streamStatus("Finding the stream…");
   const meta = await api(`/api/stream/${v.id}`);
+  const heights = Object.keys(meta.videos).map(Number).sort((a, b) => a - b);
+  const fit = heights.filter(x => x <= quality);
+  const h = quality ? (fit.length ? fit[fit.length - 1] : heights[0]) : meta.default;
+  meta.video = meta.videos[h];
   for (const k of ["video", "audio"])
     if (!MediaSource.isTypeSupported(meta[k]))
       throw new Error(`this browser cannot play ${meta[k]}`);
   if (!me.alive) return;
+  paintQuality(v, heights, h);
   showChapters(meta.chapters, v.id);
   const ms = me.ms = new MediaSource();
   me.objectUrl = URL.createObjectURL(ms);
   vid.src = me.objectUrl;
   await new Promise(r => ms.addEventListener("sourceopen", r, {once: true}));
   const idx = await Promise.all(["video", "audio"].map(async kind => {
-    const url = `/stream/${v.id}/${kind}`;
+    const url = kind === "video" ? `/stream/${v.id}/video/${h}` : `/stream/${v.id}/audio`;
     return {url, kind, ...(await readIndex(url))};
   }));
   if (!me.alive) return;
@@ -1021,11 +1058,12 @@ async function startStream(v, vid) {
   vid.addEventListener("seeking", me.kick);
   vid.currentTime = v.progress || 0;
   me.kick();
-  vid.play().catch(() => {});
+  if (!paused) vid.play().catch(() => {});
 }
 
 function stopStream() {
   streamStatus("");
+  $("#pquality").hidden = true;
   if (!stream) return;
   const vid = $("#pvideo");
   stream.alive = false;

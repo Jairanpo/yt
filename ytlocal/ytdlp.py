@@ -462,26 +462,44 @@ def stream_selector(max_height: int) -> str:
 def stream_info(cfg: dict, vid: str) -> dict:
     """Where to read a video from without downloading it.
 
-    Returns {duration, video, audio}; each track is {url, headers, mime, size}.
-    The URLs are signed and expire after a few hours.
+    Returns {duration, chapters, audio, videos, default}: audio is one track,
+    videos maps each height on offer to its track, and default is the tallest
+    one within max_height. A track is {url, headers, mime, size}. The URLs are
+    signed and expire after a few hours.
     """
+    # One run lists every format, so changing quality later costs nothing;
+    # the selector only makes yt-dlp fail when nothing streamable exists.
     cmd = base_cmd(cfg) + ["-j", "--no-playlist",
-                           "-f", stream_selector(cfg["max_height"]),
+                           "-f", stream_selector(100000),
                            f"https://www.youtube.com/watch?v={vid}"]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if proc.returncode != 0 or not proc.stdout.strip():
         raise YtdlpError((proc.stderr or "no streamable format").strip()[:500])
     info = json.loads(proc.stdout.splitlines()[0])
-    out = {"duration": info.get("duration"), "chapters": chapters(info)}
-    for f in info.get("requested_formats") or []:
-        kind = "audio" if f.get("vcodec") in (None, "none") else "video"
+
+    def track(f, kind):
         codec = f["acodec"] if kind == "audio" else f["vcodec"]
-        out[kind] = {"url": f["url"], "headers": f.get("http_headers") or {},
-                     "mime": f'{kind}/mp4; codecs="{codec}"',
-                     "size": f.get("filesize")}
-    if "video" not in out or "audio" not in out:
+        return {"url": f["url"], "headers": f.get("http_headers") or {},
+                "mime": f'{kind}/mp4; codecs="{codec}"', "size": f.get("filesize")}
+
+    best = {}
+    for f in info.get("formats") or []:
+        if (f.get("ext") == "mp4" and f.get("protocol") == "https"
+                and str(f.get("vcodec") or "").startswith("avc1")
+                and f.get("acodec") in (None, "none") and f.get("height")):
+            # Several files can share a height (30 vs 60 fps); keep the richest.
+            rank = (f.get("fps") or 0, f.get("tbr") or 0)
+            if f["height"] not in best or rank > best[f["height"]][0]:
+                best[f["height"]] = (rank, f)
+    audio = [f for f in info.get("requested_formats") or []
+             if f.get("vcodec") in (None, "none")]
+    if not best or not audio:
         raise YtdlpError("no separate H.264 + AAC streams to play")
-    return out
+    videos = {h: track(f, "video") for h, (_, f) in sorted(best.items())}
+    fit = [h for h in videos if h <= int(cfg["max_height"])]
+    return {"duration": info.get("duration"), "chapters": chapters(info),
+            "audio": track(audio[0], "audio"), "videos": videos,
+            "default": fit[-1] if fit else min(videos)}
 
 
 def output_template(media_dir: Path) -> str:
