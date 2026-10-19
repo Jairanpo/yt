@@ -285,7 +285,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({"ok": True, "running": {}})
                     tg.stop(self.cfg, eid, body.get("workspace"))
                 except tg.TogglError as exc:
-                    return self._fail(502, str(exc))
+                    # Most often the timer was already stopped in Toggl itself:
+                    # answer with what is really running instead of an error.
+                    try:
+                        now = tg.current(self.cfg)
+                    except tg.TogglError:
+                        return self._fail(502, str(exc))
+                    if (now or {}).get("id") == eid:
+                        return self._fail(502, str(exc))
+                    return self._json({"ok": True, "running": tg.as_json(now)})
                 return self._json({"ok": True, "running": {}})
             if len(parts) == 3 and parts[0] == "api":
                 action, vid = parts[1], parts[2]

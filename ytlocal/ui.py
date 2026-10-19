@@ -856,7 +856,17 @@ function togglMount(v) {
   $("#pmeta").insertBefore(el, $("#pdesc"));
   $("#tgbtn").onclick = togglClick;
   paintToggl_();
+  togglPoll();
 }
+
+// The timer can be stopped or started in Toggl itself, so the button asks
+// again whenever you come back to this tab, and every few minutes while a
+// player is open. Toggl's free plan allows about 30 requests an hour.
+const TG_EVERY = 3 * 60 * 1000;
+setInterval(() => { if ($("#ptoggl") && !document.hidden) togglPoll(); }, TG_EVERY);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && $("#ptoggl")) togglPoll();
+});
 
 function togglUnmount() {
   const el = $("#ptoggl");
