@@ -224,6 +224,30 @@ PAGE = r"""<!doctype html>
                    color:#c3c0b8; cursor:pointer; font-variant-numeric:tabular-nums; }
   #pspeed button:hover, #pquality button:hover { border-color:var(--accent); color:var(--accent); }
   #pspeed button.on, #pquality button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  /* Marks: ticks on a strip under the picture, and a list you can annotate. */
+  #pmstrip { position:relative; max-width:1100px; width:100%; height:12px;
+             margin:4px auto 0; flex-shrink:0; }
+  #pmstrip button { position:absolute; top:0; width:4px; height:12px; padding:0;
+                    margin-left:-2px; border:none; border-radius:2px;
+                    background:#f2c14e; cursor:pointer; }
+  #pmstrip button:hover { transform:scaleX(1.8); }
+  #pmarkrow { display:flex; align-items:center; gap:10px; margin-top:10px; }
+  #pmarkrow .hint { color:#9b988f; font-size:12px; }
+  #pmarkadd { background:none; border:1px solid rgba(233,231,227,.35); color:#e9e7e3;
+              border-radius:6px; padding:4px 10px; font:inherit; font-size:13px;
+              cursor:pointer; }
+  #pmarkadd:hover { border-color:#f2c14e; color:#f2c14e; }
+  #pmarks { list-style:none; margin:6px 0 0; padding:0; max-height:16vh; overflow:auto;
+            font-size:13.5px; color-scheme:dark; }
+  #pmarks li { display:flex; align-items:center; gap:8px; padding:1px 0; }
+  #pmarks .ts { background:none; border:none; color:#f2c14e; font:inherit; cursor:pointer;
+                min-width:5ch; text-align:left; font-variant-numeric:tabular-nums; padding:2px 6px; }
+  #pmarks .note { flex:1; min-width:0; background:none; border:1px solid transparent;
+                  color:#c3c0b8; font:inherit; padding:2px 6px; border-radius:4px; }
+  #pmarks .note:hover { border-color:rgba(233,231,227,.2); }
+  #pmarks .note:focus { border-color:#f2c14e; outline:none; color:#e9e7e3; }
+  #pmarks .x { background:none; border:none; color:#9b988f; cursor:pointer; font-size:16px; }
+  #pmarks .x:hover { color:#e9e7e3; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
   /* The Toggl timer, when a token is configured. Without one the whole row
@@ -434,11 +458,15 @@ PAGE = r"""<!doctype html>
   <button id="pclose" title="Close (Esc)">&times;</button>
   <video id="pvideo" controls playsinline></video>
   <div id="pchap" hidden></div>
+  <div id="pmstrip"></div>
   <div id="pmeta"><h2 id="ptitle"></h2><div class="sub" id="psub"></div>
     <div class="sub" id="pstatus" hidden></div>
     <div id="pspeed" title="Speed (Shift+&lt; / Shift+&gt;)"></div>
     <div id="pquality" title="Streaming quality" hidden></div>
     <ol id="pchlist" hidden></ol>
+    <div id="pmarkrow"><button id="pmarkadd" title="Mark where you are (M)">🔖 Mark this spot</button>
+      <span class="hint">M · click a mark to jump back</span></div>
+    <ol id="pmarks"></ol>
     <div id="pdesc"></div></div>
 </div>
 
@@ -899,6 +927,7 @@ function card(v, seq) {
       ${v.have ? `<span class="flag have" style="${seq ? 'left:auto;right:6px' : ''}">${v.audio ? "audio ♪" : "on disk"}</span>` : ''}
       ${v.starred ? '<span class="flag" style="left:auto;right:6px;top:6px">★</span>' : ''}
       ${v.duration ? `<span class="badge">${fmtDur(v.duration)}</span>` : ''}
+      ${v.marks ? `<span class="flag" style="top:auto;bottom:6px" title="${v.marks} marked spot${v.marks > 1 ? "s" : ""}">🔖 ${v.marks}</span>` : ''}
       <span class="flag seen" title="Watched" ${v.watched ? '' : 'hidden'}>✓</span>
       ${pct ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}
     </div>
@@ -1027,6 +1056,8 @@ function open_(v) {
                              .filter(Boolean).join(" · ");
   $("#pdesc").textContent = v.description || "";
   showChapters([], v.id);
+  showMarks([], v.id);
+  api(`/api/marks/${v.id}`).then(d => showMarks(d.marks, v.id)).catch(() => {});
   togglMount(v);
   $("#player").classList.add("on");
   if (v.have) {
@@ -1339,11 +1370,74 @@ $("#pvideo").addEventListener("ratechange", e => {
 });
 $("#pvideo").addEventListener("loadedmetadata", () => setSpeed(speed));
 document.addEventListener("keydown", e => {
-  if (!$("#player").classList.contains("on") || e.target.matches("input, textarea")) return;
+  if (!$("#player").classList.contains("on") || e.target.matches?.("input, textarea")) return;
   if (e.key === ">") setSpeed(speed + 0.25);
   else if (e.key === "<") setSpeed(speed - 0.25);
 });
 setSpeed(speed);
+
+/* ---- marks: "I got this far", as many as you like per video ---- */
+let marks = [];
+const markJump = t => { const vid = $("#pvideo"); vid.currentTime = t; vid.play().catch(()=>{}); };
+function showMarks(list, id, focusId) {
+  if (current?.id !== id) return;
+  marks = list || [];
+  const ol = $("#pmarks");
+  ol.replaceChildren();
+  for (const m of marks) {
+    const li = document.createElement("li");
+    const ts = document.createElement("button");
+    ts.className = "ts"; ts.textContent = fmtDur(m.t) || "0:00";
+    ts.onclick = () => markJump(m.t);
+    const note = document.createElement("input");
+    note.className = "note"; note.value = m.note; note.placeholder = "add a note…";
+    const save = () => { if (note.value.trim() !== m.note)
+      markPost({id: m.id, note: note.value}); };
+    note.onkeydown = e => { if (e.key === "Enter") note.blur();
+                            if (e.key === "Escape") { e.stopPropagation(); note.value = m.note; note.blur(); } };
+    note.onblur = save;
+    const x = document.createElement("button");
+    x.className = "x"; x.textContent = "×"; x.title = "Remove this mark";
+    x.onclick = () => markPost({drop: m.id});
+    li.append(ts, note, x);
+    ol.appendChild(li);
+    if (m.id === focusId) setTimeout(() => note.focus(), 0);
+  }
+  paintMarkStrip();
+}
+function paintMarkStrip() {
+  const strip = $("#pmstrip"), d = $("#pvideo").duration || current?.duration;
+  strip.replaceChildren();
+  if (!d || !isFinite(d)) return;
+  for (const m of marks) {
+    const b = document.createElement("button");
+    b.style.left = `${Math.min(100, 100 * m.t / d)}%`;
+    b.title = `${fmtDur(m.t) || "0:00"}${m.note ? " · " + m.note : ""}`;
+    b.onclick = () => markJump(m.t);
+    strip.appendChild(b);
+  }
+}
+async function markPost(body) {
+  if (!current) return;
+  const id = current.id;
+  try {
+    const r = await post(`/api/marks/${id}`, body);
+    const before = new Set(marks.map(m => m.id));
+    // A new mark gets its note box focused, ready to say what this spot is.
+    const fresh = r.marks.find(m => !before.has(m.id));
+    showMarks(r.marks, id, fresh?.id);
+  } catch (e) { alert(e.message); }
+}
+function addMark() {
+  if (!current) return;
+  markPost({t: Math.floor($("#pvideo").currentTime)});
+}
+$("#pmarkadd").onclick = addMark;
+$("#pvideo").addEventListener("durationchange", paintMarkStrip);
+document.addEventListener("keydown", e => {
+  if (!$("#player").classList.contains("on") || e.target.matches?.("input, textarea")) return;
+  if (e.key === "m" || e.key === "M") addMark();
+});
 
 /* ---- chapters ---- */
 let chapters = [];

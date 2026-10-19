@@ -94,6 +94,7 @@ def row_to_json(r) -> dict:
         "hidden": bool(r["hidden"]),
         "unavailable": bool(r["unavailable"]),
         "progress": r["progress"],
+        "marks": r["n_marks"],
     }
 
 
@@ -207,6 +208,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"jobs": self._jobs()})
             if path.startswith("/thumb/"):
                 return self._thumb(path[7:])
+            if path.startswith("/api/marks/"):
+                vid = path[len("/api/marks/"):]
+                if not _ID_RE.match(vid):
+                    return self._fail(400, "bad id")
+                return self._json({"marks": db.marks(self.conn, vid)})
             if path.startswith("/api/chapters/"):
                 return self._chapters(path[len("/api/chapters/"):])
             if path.startswith("/api/stream/"):
@@ -501,6 +507,17 @@ class Handler(BaseHTTPRequestHandler):
             val = int(body.get("value", 0 if row["hidden"] else 1))
             db.set_flag(self.conn, vid, "hidden", val)
             return self._json({"ok": True, "hidden": bool(val)})
+        if action == "marks":
+            # One endpoint, three verbs: add {t, note}, note {id, note}, drop {id}.
+            if "t" in body:
+                db.add_mark(self.conn, vid, float(body["t"]), body.get("note", ""))
+            elif body.get("drop"):
+                db.delete_mark(self.conn, vid, body["drop"])
+            elif "id" in body:
+                db.edit_mark(self.conn, vid, body["id"], body.get("note", ""))
+            else:
+                return self._fail(400, "say t, id or drop")
+            return self._json({"ok": True, "marks": db.marks(self.conn, vid)})
         if action == "progress":
             db.set_flag(self.conn, vid, "progress", float(body.get("value", 0)))
             return self._json({"ok": True})

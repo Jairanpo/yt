@@ -215,6 +215,10 @@ and `yt serve --status` never lies about a server that isn't there.
   on show in the header; click it to browse their other playlists. Picking a
   playlist or collection switches the grid into that list's own order and
   numbers each card.
+- **Marks** — in the player, **🔖 Mark this spot** (or **M**) pins where you
+  are, with an optional note ("got this far", "the part about particles").
+  Marks show as yellow ticks under the picture and as a list you can click to
+  jump back; a card with marks shows 🔖 and how many.
 - **Sort dropdown** reorders the grid — newest, oldest, recently added, title,
   longest, shortest. Your choice is remembered for that view and shared with
   the CLI; see [Sorting](#sorting).

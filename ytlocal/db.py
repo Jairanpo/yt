@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS creator_topics (
     set_at   INTEGER NOT NULL
 );
 
+-- Places you marked in a video ("got this far", "the good bit"), each with
+-- an optional note. Separate from progress, which only ever holds one spot.
+CREATE TABLE IF NOT EXISTS marks (
+    id          INTEGER PRIMARY KEY,
+    video_id    TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    t           REAL NOT NULL,      -- seconds into the video
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_marks_video ON marks(video_id, t);
+
 CREATE INDEX IF NOT EXISTS idx_sv_source  ON source_videos(source_id, position);
 CREATE INDEX IF NOT EXISTS idx_sv_video   ON source_videos(video_id);
 CREATE INDEX IF NOT EXISTS idx_ci_coll    ON collection_items(collection_id, rank);
@@ -528,7 +539,8 @@ _SEL = """SELECT v.*,
       LIMIT 1) AS channel_name,
     (SELECT s.handle FROM source_videos sv2 JOIN sources s ON s.id = sv2.source_id
       WHERE sv2.video_id = v.id ORDER BY (s.kind = 'channel') DESC, s.name
-      LIMIT 1) AS channel_handle
+      LIMIT 1) AS channel_handle,
+    (SELECT COUNT(*) FROM marks m WHERE m.video_id = v.id) AS n_marks
   FROM videos v"""
 
 
@@ -802,6 +814,32 @@ def set_sort(conn, sort: str, source=None, collection=None) -> None:
                ON CONFLICT(scope) DO UPDATE SET sort = excluded.sort,
                                                 set_at = excluded.set_at""",
             (scope, sort, now()))
+    conn.commit()
+
+
+# --- marks ----------------------------------------------------------------
+
+def marks(conn, vid: str) -> list:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, t, note FROM marks WHERE video_id = ? ORDER BY t", (vid,))]
+
+
+def add_mark(conn, vid: str, t: float, note="") -> int:
+    cur = conn.execute(
+        "INSERT INTO marks (video_id, t, note, created_at) VALUES (?, ?, ?, ?)",
+        (vid, max(0.0, float(t)), (note or "").strip()[:500], now()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def edit_mark(conn, vid: str, mid: int, note: str) -> None:
+    conn.execute("UPDATE marks SET note = ? WHERE id = ? AND video_id = ?",
+                 ((note or "").strip()[:500], int(mid), vid))
+    conn.commit()
+
+
+def delete_mark(conn, vid: str, mid: int) -> None:
+    conn.execute("DELETE FROM marks WHERE id = ? AND video_id = ?", (int(mid), vid))
     conn.commit()
 
 
