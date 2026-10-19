@@ -350,6 +350,13 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     return self._fail(400, str(exc))
                 return self._json({"ok": True, "channels": db.toggl_channels(self.conn)})
+            if url.path == "/api/topic":
+                body = self._body()
+                try:
+                    db.set_topic(self.conn, body.get("creator"), body.get("topic"))
+                except ValueError as exc:
+                    return self._fail(400, str(exc))
+                return self._json({"ok": True})
             if url.path == "/api/sort":
                 body = self._body()
                 sort = body.get("sort") or "default"
@@ -409,11 +416,13 @@ class Handler(BaseHTTPRequestHandler):
         # courses, live streams and playlists. `group` names the creator a
         # source hangs under, so the picker can nest them without guessing --
         # playlist titles alone repeat across creators.
+        topics = db.topics(self.conn)
         srcs = [
             {"id": s["id"], "kind": s["kind"], "section": s["section"],
              "name": s["name"] or s["handle"] or s["url"],
              "creator": g["creator"] or s["creator"], "handle": s["handle"],
-             "group": g["key"], "owner": s["owner"],
+             "group": g["key"], "topic": topics.get(g["key"], ""),
+             "owner": s["owner"],
              "shelved": bool(s["shelved"]),
              "total": s["n_total"], "have": s["n_have"], "seen": s["n_seen"]}
             for g in db.by_creator(db.sources(self.conn))

@@ -204,14 +204,17 @@ and holds it for its lifetime. The kernel drops that lock however the process
 dies — clean exit, crash, `kill -9` — so there is no stale pidfile to clean up
 and `yt serve --status` never lies about a server that isn't there.
 
-- **Search box** filters titles and descriptions as you type. The dropdown
-  groups everything you can narrow to under the creator it belongs to — their
-  channel (**▸ All videos**) on top, then their ◆ courses, ● live streams and
-  ▤ playlists, because titles like "Lesson 1" or "JLPT N5" repeat across
-  channels — and your **Collections** last. Whichever
-  view you are in, the creator stays on show next to the picker, since a
-  collapsed dropdown shows the title alone. Picking a playlist or collection
-  switches the grid into that list's own order and numbers each card.
+- **Search box** filters titles and descriptions as you type.
+- **Sidebar** holds everything you can narrow to. Each creator sits on a topic
+  you choose (hover the creator and press **⋯**, e.g. *Japanese*, *Unreal*),
+  folds open to their channel (**▸ All videos**), ◆ courses, ● live streams
+  and ▤ playlists, and shows how many you have watched of each. Your
+  **Collections** and anything **Shelved** come last. The box at its top
+  narrows the whole tree as you type — a topic, creator or playlist name. At
+  phone width it hides behind **☰**. The creator of the view you are in stays
+  on show in the header; click it to browse their other playlists. Picking a
+  playlist or collection switches the grid into that list's own order and
+  numbers each card.
 - **Sort dropdown** reorders the grid — newest, oldest, recently added, title,
   longest, shortest. Your choice is remembered for that view and shared with
   the CLI; see [Sorting](#sorting).

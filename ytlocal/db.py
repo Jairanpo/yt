@@ -105,6 +105,15 @@ CREATE TABLE IF NOT EXISTS toggl_map (
     set_at   INTEGER NOT NULL
 );
 
+-- The shelf a creator sits on in the sidebar (Japanese, Unreal, Music...).
+-- Keyed on the creator's group key: their channel id, or "name:<creator>"
+-- for one known only through a playlist.
+CREATE TABLE IF NOT EXISTS creator_topics (
+    creator  TEXT PRIMARY KEY,
+    topic    TEXT NOT NULL,
+    set_at   INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sv_source  ON source_videos(source_id, position);
 CREATE INDEX IF NOT EXISTS idx_sv_video   ON source_videos(video_id);
 CREATE INDEX IF NOT EXISTS idx_ci_coll    ON collection_items(collection_id, rank);
@@ -793,6 +802,29 @@ def set_sort(conn, sort: str, source=None, collection=None) -> None:
                ON CONFLICT(scope) DO UPDATE SET sort = excluded.sort,
                                                 set_at = excluded.set_at""",
             (scope, sort, now()))
+    conn.commit()
+
+
+# --- topics ---------------------------------------------------------------
+
+def topics(conn) -> dict:
+    """{creator group key: topic}."""
+    return {r["creator"]: r["topic"]
+            for r in conn.execute("SELECT creator, topic FROM creator_topics")}
+
+
+def set_topic(conn, creator: str, topic: str) -> None:
+    """File a creator under a topic; a blank topic takes them off any."""
+    creator, topic = (creator or "").strip(), " ".join((topic or "").split())
+    if not creator:
+        raise ValueError("which creator?")
+    if not topic:
+        conn.execute("DELETE FROM creator_topics WHERE creator = ?", (creator,))
+    else:
+        conn.execute(
+            """INSERT INTO creator_topics (creator, topic, set_at) VALUES (?, ?, ?)
+               ON CONFLICT(creator) DO UPDATE SET topic = excluded.topic,
+                    set_at = excluded.set_at""", (creator, topic, now()))
     conn.commit()
 
 

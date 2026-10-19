@@ -45,7 +45,43 @@ PAGE = r"""<!doctype html>
   .who-src.more:hover { color:var(--accent); }
   .stats { color:var(--dim); font-size:13px; margin-left:auto; }
   #shelve[hidden] { display:none; }
-  main { padding:20px; }
+  main { padding:20px; flex:1; min-width:0; }
+  .layout { display:flex; align-items:flex-start; }
+  /* The sidebar scrolls on its own and stays put under the header. */
+  #side { position:sticky; top:var(--hh, 60px); width:270px; flex-shrink:0;
+          height:calc(100vh - var(--hh, 60px)); overflow:auto; box-sizing:border-box;
+          border-right:1px solid var(--edge); padding:12px 8px 80px; }
+  #sidefilter { width:100%; box-sizing:border-box; margin-bottom:8px; }
+  #sidetree { display:flex; flex-direction:column; font-size:13.5px; }
+  #sidetree button { background:none; border:none; font:inherit; color:inherit;
+                     cursor:pointer; text-align:left; }
+  #side .sitem { display:flex; gap:8px; align-items:baseline; width:100%;
+                padding:3px 8px; border-radius:6px; color:var(--ink); }
+  #side .sitem:hover, #side .sfold:hover { background:var(--panel); }
+  #side .sitem.on { background:var(--accent); color:#fff; }
+  #side .sitem.on .ct { color:#fff; }
+  #side .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+              white-space:nowrap; }
+  #side .ct { color:var(--dim); font-size:11.5px; font-variant-numeric:tabular-nums; }
+  #side .sfold { display:flex; align-items:center; gap:2px; border-radius:6px;
+                 padding-right:6px; margin-top:2px; }
+  #side .sfold .nm { font-weight:600; padding:3px 0; }
+  #side .tw { width:18px; color:var(--dim); font-size:11px; padding:3px 0; }
+  #side .tbtn { color:var(--dim); padding:0 6px; border-radius:4px; visibility:hidden; }
+  #side .sfold:hover .tbtn { visibility:visible; }
+  #side .tbtn:hover { color:var(--accent); }
+  #side .tedit { flex:1; min-width:0; font:inherit; font-size:12.5px; padding:2px 6px;
+                 background:var(--panel); color:var(--ink); border:1px solid var(--accent);
+                 border-radius:5px; }
+  #side .snone { color:var(--dim); padding:8px; font-size:13px; }
+  #sidebtn { display:none; }
+  /* Phone width: the sidebar slides over the grid when you ask for it. */
+  @media (max-width:800px) {
+    #sidebtn { display:inline-block; }
+    #side { display:none; position:fixed; left:0; z-index:35; background:var(--bg);
+            box-shadow:var(--shadow); width:min(300px, 85vw); }
+    body.side-on #side { display:block; }
+  }
   .grid { display:grid; gap:18px;
           grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); }
   .card { background:var(--panel); border:1px solid var(--edge); border-radius:10px;
@@ -296,7 +332,7 @@ PAGE = r"""<!doctype html>
 <header>
   <div class="brand">yt<span>·</span>local</div>
   <input type="search" id="q" placeholder="Search titles and descriptions…" autocomplete="off">
-  <select id="src"><option value="">Everything</option></select>
+  <button class="chip" id="sidebtn" title="Channels and playlists">☰</button>
   <button class="who-src" id="whosrc" hidden></button>
   <button class="chip" id="shelve" hidden></button>
   <select id="sort" title="Sort order (remembered per view)"></select>
@@ -315,10 +351,18 @@ PAGE = r"""<!doctype html>
   <div id="viewprog" hidden><span class="track"><i></i></span><span></span></div>
   <div class="stats" id="stats"></div>
 </header>
+<div class="layout">
+<aside id="side">
+  <input type="search" id="sidefilter" placeholder="Find a channel or playlist…"
+         autocomplete="off">
+  <datalist id="topiclist"></datalist>
+  <nav id="sidetree"></nav>
+</aside>
 <main>
   <div class="grid" id="grid"></div>
   <div class="empty" id="empty" hidden></div>
 </main>
+</div>
 
 <div class="fold" id="fold" hidden>
   <div class="seenlist" id="seenlist" hidden></div>
@@ -431,6 +475,9 @@ function params() {
 }
 
 let pickerKey = "";
+// The sidebar sits right under the header, whose height changes as it wraps.
+new ResizeObserver(([e]) => document.documentElement.style
+  .setProperty("--hh", `${e.target.offsetHeight}px`)).observe($("header"));
 async function refresh(opts) {
   const qs = params();
   // The view lives in the address bar, so a refresh (or a bookmark) lands you
@@ -463,70 +510,191 @@ async function refresh(opts) {
 const GLYPHS = {channel:"▸", course:"◆", live:"●", playlist:"▤", picks:"✦"};
 const glyph = s => GLYPHS[s.kind === "channel" ? "channel" : s.section || "playlist"];
 
+/* ---- sidebar: topics, then creators, then their channel and playlists ----
+   A dropdown stops scaling past a dozen creators. Here every creator sits on
+   a topic shelf you choose (Japanese, Unreal...), folds open to what you track
+   from them, and the box at the top narrows the whole tree as you type. */
+let sideOpen = new Set();
+try { sideOpen = new Set(JSON.parse(localStorage.getItem("yt.side-open") || "[]")); }
+catch (e) {}
+const saveSideOpen = () => {
+  try { localStorage.setItem("yt.side-open", JSON.stringify([...sideOpen])); } catch (e) {}
+};
+let sideFilter = "";
+const NO_TOPIC = "No topic";
+
 function buildPicker(sources, colls) {
-  const sel = $("#src");
-  const want = state.source ? "s:" + state.source
-             : state.collection ? "c:" + state.collection : "";
-  // Rebuild the options only when the set actually changes, so an open
-  // dropdown survives the 1.2s job-polling refreshes.
-  const key = JSON.stringify([sources.map(s => [s.id, s.group, s.section, s.creator,
-                                                 s.shelved, s.have, s.total]),
-                              colls.map(c => [c.id, c.have, c.total])]);
-  if (key !== pickerKey) {
-    pickerKey = key;
-    sel.innerHTML = '<option value="">Everything</option>';
-    const group = (label, items, prefix, text) => {
-      if (!items.length) return;
-      const g = document.createElement("optgroup"); g.label = label;
-      for (const it of items) {
-        const o = document.createElement("option");
-        o.value = prefix + it.id;
-        o.textContent = `${text(it)} (${it.have}/${it.total})`;
-        // Hovering a generic title still answers "whose?". A channel is its
-        // own creator, so saying so twice would be noise.
-        if (it.creator && it.creator !== it.name)
-          o.title = `${it.name} — ${it.creator}`;
-        g.appendChild(o);
-      }
-      sel.appendChild(g);
-    };
-    // The creator is the root: one group each, their channel on top and then
-    // their courses, live streams and playlists. "Lesson 1" and "Tutorials"
-    // repeat across creators, and under its creator the name is never
-    // ambiguous. The server hands them over already grouped and ordered, so
-    // insertion order is the order to show.
-    const byCreator = new Map();
-    for (const s of sources.filter(s => !s.shelved)) {
-      if (!byCreator.has(s.group)) byCreator.set(s.group, []);
-      byCreator.get(s.group).push(s);
-    }
-    for (const items of byCreator.values())
-      group(items[0].creator || "unknown creator", items, "s:",
-            it => it.kind === "channel" ? `${glyph(it)} All videos`
-                                        : `${glyph(it)} ${it.name}`);
-    group("Collections", colls, "c:", it => it.name);
-    // Shelved sources are out of the way, not out of reach: last, and each
-    // one says whose it is, since its creator's group is not around it.
-    group("Shelved", sources.filter(s => s.shelved), "s:",
-          it => it.kind === "channel" ? `${glyph(it)} ${it.name} — all videos`
-                                      : `${glyph(it)} ${it.name} — ${it.creator || "?"}`);
+  const known = state.source ? sources.some(s => s.id === state.source)
+              : state.collection ? colls.some(c => String(c.id) === String(state.collection))
+              : true;
+  if (!known) {
+    // A URL naming a source that has since been forgotten: back to Everything.
+    state.source = state.collection = "";
+    refresh();
+    return;
   }
   paintWho(sources, colls);
   paintShelve(sources);
-  // The picker always shows the view you are in, however you got here -- a
-  // restored URL and the back button both move the state, not the dropdown.
-  if (sel.value !== want) {
-    sel.value = want;
-    if (want && sel.value !== want) {
-      // A URL naming a source that has since been forgotten. Assigning a value
-      // no option carries leaves the select on nothing at all, so put it back
-      // on Everything by hand.
-      sel.selectedIndex = 0;
-      state.source = state.collection = "";
-      refresh();
+  // The 1.2s job polling refreshes too; rebuilding under an open topic box
+  // would throw away what you were typing.
+  if ($("#side .tedit")) return;
+  const key = JSON.stringify([sources.map(s => [s.id, s.group, s.topic, s.section,
+                                                 s.creator, s.shelved, s.seen, s.total]),
+                              colls.map(c => [c.id, c.seen, c.total]),
+                              sideFilter, [...sideOpen], state.source, state.collection]);
+  if (key === pickerKey) return;
+  pickerKey = key;
+  paintSide(sources, colls);
+}
+
+function paintSide(sources, colls) {
+  const tree = $("#sidetree");
+  tree.replaceChildren();
+  const q = sideFilter.toLowerCase();
+  const hit = (...xs) => !q || xs.some(x => x && x.toLowerCase().includes(q));
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  };
+  const count = it => it.total ? `${it.seen}/${it.total}` : "";
+  const row = (label, id, it, depth) => {
+    const b = el("button", "sitem" + (id === activeId() ? " on" : ""));
+    b.style.paddingLeft = `${8 + depth * 14}px`;
+    b.append(el("span", "nm", label), el("span", "ct", count(it)));
+    b.title = it.total ? `${label} — ${it.seen} watched, ${it.have} on disk, of ${it.total}` : label;
+    b.onclick = () => pick(id);
+    return b;
+  };
+  // A fold: its header toggles it open; searching opens everything it holds.
+  const fold = (k, label, n, depth, extra) => {
+    const open = !!q || sideOpen.has(k);
+    const h = el("div", "sfold");
+    h.style.paddingLeft = `${4 + depth * 14}px`;
+    const t = el("button", "tw", open ? "▾" : "▸");
+    const nm = el("button", "nm", label);
+    const toggle = () => {
+      sideOpen.has(k) ? sideOpen.delete(k) : sideOpen.add(k);
+      saveSideOpen(); pickerKey = ""; buildPicker(state.sources, state.collections);
+    };
+    t.onclick = toggle;
+    nm.onclick = extra && extra.onName ? extra.onName : toggle;
+    h.append(t, nm);
+    if (n != null) h.append(el("span", "ct", n));
+    if (extra && extra.tail) h.append(extra.tail);
+    tree.append(h);
+    return open;
+  };
+
+  tree.append(row("Everything", "", {}, 0));
+
+  // Group live sources by creator (the server sends them already ordered),
+  // then creators by topic.
+  const creators = new Map();
+  for (const s of sources.filter(s => !s.shelved)) {
+    if (!creators.has(s.group))
+      creators.set(s.group, {key: s.group, name: s.creator || "unknown creator",
+                             handle: s.handle, topic: s.topic || NO_TOPIC, items: []});
+    creators.get(s.group).items.push(s);
+  }
+  const topics = new Map();
+  for (const c of creators.values()) {
+    if (!topics.has(c.topic)) topics.set(c.topic, []);
+    topics.get(c.topic).push(c);
+  }
+  const names = [...topics.keys()].sort((a, b) =>
+    (a === NO_TOPIC) - (b === NO_TOPIC) || a.localeCompare(b));
+  // Everyone on one shelf needs no shelf at all.
+  const flat = names.length === 1 && names[0] === NO_TOPIC;
+  for (const t of names) {
+    const all = topics.get(t);
+    const topicHit = q && t !== NO_TOPIC && hit(t);
+    const shown = all.map(c => {
+      const whole = topicHit || hit(c.name, c.handle);
+      const items = whole ? c.items : c.items.filter(s => hit(s.name));
+      return items.length ? {...c, items} : null;
+    }).filter(Boolean);
+    if (!shown.length) continue;
+    const depth = flat ? 0 : 1;
+    if (!flat && !fold("t:" + t, t, all.length, 0)) continue;
+    for (const c of shown) {
+      const chan = c.items.find(s => s.kind === "channel");
+      const edit = el("button", "tbtn", "⋯");
+      edit.title = `Topic for ${c.name}`;
+      edit.onclick = e => { e.stopPropagation(); editTopic(edit, c); };
+      // With their channel tracked, the name opens all their videos.
+      const open = fold("g:" + c.key, c.name, null, depth, {
+        tail: edit,
+        onName: chan ? () => pick("s:" + chan.id) : null});
+      if (!open) continue;
+      for (const s of c.items)
+        tree.append(row(s.kind === "channel" ? `${glyph(s)} All videos` : `${glyph(s)} ${s.name}`,
+                        "s:" + s.id, s, depth + 1));
     }
   }
+
+  const cs = colls.filter(c => hit(c.name));
+  if (cs.length && fold("collections", "Collections", colls.length, 0))
+    for (const c of cs) tree.append(row(c.name, "c:" + c.id, c, 1));
+  const shelved = sources.filter(s => s.shelved && hit(s.name, s.creator));
+  if (shelved.length && fold("shelved", "Shelved", shelved.length, 0))
+    for (const s of shelved)
+      tree.append(row(s.kind === "channel" ? `${glyph(s)} ${s.name}`
+                                           : `${glyph(s)} ${s.name} — ${s.creator || "?"}`,
+                      "s:" + s.id, s, 1));
+  if (tree.children.length === 1 && q)
+    tree.append(el("div", "snone", "Nothing tracked matches."));
 }
+
+const activeId = () => state.source ? "s:" + state.source
+                     : state.collection ? "c:" + state.collection : "";
+
+function pick(id) {
+  state.source     = id.startsWith("s:") ? id.slice(2) : "";
+  state.collection = id.startsWith("c:") ? id.slice(2) : "";
+  document.body.classList.remove("side-on");          // phone: get out of the way
+  refresh({push: true});
+}
+
+// An inline box, suggesting the topics already in use; Enter keeps it,
+// Escape or leaving it blank-and-unchanged walks away.
+function editTopic(btn, c) {
+  const inp = document.createElement("input");
+  inp.className = "tedit";
+  inp.value = c.topic === NO_TOPIC ? "" : c.topic;
+  inp.placeholder = "Topic, e.g. Japanese";
+  inp.setAttribute("list", "topiclist");
+  $("#topiclist").replaceChildren(...[...new Set(state.sources.map(s => s.topic).filter(Boolean))]
+    .sort().map(t => Object.assign(document.createElement("option"), {value: t})));
+  btn.replaceWith(inp);
+  inp.focus(); inp.select();
+  let done = false;
+  const finish = async save => {
+    if (done) return;
+    done = true;
+    if (save) {
+      const topic = inp.value.trim();
+      await post("/api/topic", {creator: c.key, topic}).catch(e => alert(e.message));
+      if (topic) sideOpen.add("t:" + topic);
+      saveSideOpen();
+    }
+    inp.remove();
+    pickerKey = "";
+    refresh();
+  };
+  inp.onkeydown = e => {
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+  };
+  inp.onblur = () => finish(true);
+}
+
+$("#sidefilter").addEventListener("input", e => {
+  sideFilter = e.target.value.trim();
+  pickerKey = ""; buildPicker(state.sources, state.collections);
+});
+$("#sidebtn").onclick = () => document.body.classList.toggle("side-on");
 
 // The creator of the view you are in, kept beside the picker: a collapsed
 // select shows the option text alone, and the option text is the bit that is
@@ -1646,12 +1814,6 @@ let debounce = null;
 $("#q").addEventListener("input", e => {
   state.q = e.target.value.trim();
   clearTimeout(debounce); debounce = setTimeout(refresh, 220);
-});
-$("#src").addEventListener("change", e => {
-  const v = e.target.value;
-  state.source     = v.startsWith("s:") ? v.slice(2) : "";
-  state.collection = v.startsWith("c:") ? v.slice(2) : "";
-  refresh({push: true});
 });
 $("#sort").addEventListener("change", async e => {
   // Persisted against the view you were looking at when you chose it.
