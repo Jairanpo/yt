@@ -161,6 +161,14 @@ PAGE = r"""<!doctype html>
   #pchlist button:hover { background:rgba(233,231,227,.08); color:#e9e7e3; }
   #pchlist li.on button { color:var(--accent); }
   #pchlist .ts { color:#9b988f; min-width:5ch; font-variant-numeric:tabular-nums; }
+  /* Speed: the browser's own menu forgets it on every new video, so the
+     choice lives here and follows you from one video to the next. */
+  #pspeed { display:flex; gap:4px; margin-top:8px; }
+  #pspeed button { background:none; border:1px solid rgba(233,231,227,.25);
+                   border-radius:6px; padding:2px 9px; font:inherit; font-size:12.5px;
+                   color:#c3c0b8; cursor:pointer; font-variant-numeric:tabular-nums; }
+  #pspeed button:hover { border-color:var(--accent); color:var(--accent); }
+  #pspeed button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
   #pdesc { max-height:20vh; overflow:auto; white-space:pre-wrap; margin-top:10px;
            font-size:13.5px; color:#c3c0b8; }
   /* The Toggl timer, when a token is configured. Without one the whole row
@@ -364,6 +372,7 @@ PAGE = r"""<!doctype html>
   <div id="pchap" hidden></div>
   <div id="pmeta"><h2 id="ptitle"></h2><div class="sub" id="psub"></div>
     <div class="sub" id="pstatus" hidden></div>
+    <div id="pspeed" title="Speed (Shift+&lt; / Shift+&gt;)"></div>
     <ol id="pchlist" hidden></ol>
     <div id="pdesc"></div></div>
 </div>
@@ -1027,6 +1036,42 @@ function stopStream() {
   if (stream.objectUrl) URL.revokeObjectURL(stream.objectUrl);
   stream = null;
 }
+
+/* ---- speed ---- */
+// A new src resets playbackRate to defaultPlaybackRate, so keeping both in
+// step is what makes the chosen speed survive from one video to the next.
+const SPEEDS = [1, 1.25, 1.5, 1.75, 2];
+let speed = 1;
+try { speed = parseFloat(localStorage.getItem("yt.speed")) || 1; } catch (e) {}
+function paintSpeed() {
+  for (const b of $("#pspeed").children)
+    b.classList.toggle("on", parseFloat(b.dataset.r) === speed);
+}
+function setSpeed(r) {
+  speed = Math.min(4, Math.max(0.25, Math.round(r * 100) / 100));
+  const vid = $("#pvideo");
+  vid.defaultPlaybackRate = speed;
+  if (vid.playbackRate !== speed) vid.playbackRate = speed;
+  try { localStorage.setItem("yt.speed", speed); } catch (e) {}
+  paintSpeed();
+}
+for (const r of SPEEDS) {
+  const b = document.createElement("button");
+  b.dataset.r = r; b.textContent = r + "×";
+  b.onclick = () => setSpeed(r);
+  $("#pspeed").append(b);
+}
+// Changes from the browser's own ⋮ menu count too.
+$("#pvideo").addEventListener("ratechange", e => {
+  if (e.target.playbackRate !== speed) setSpeed(e.target.playbackRate);
+});
+$("#pvideo").addEventListener("loadedmetadata", () => setSpeed(speed));
+document.addEventListener("keydown", e => {
+  if (!$("#player").classList.contains("on") || e.target.matches("input, textarea")) return;
+  if (e.key === ">") setSpeed(speed + 0.25);
+  else if (e.key === "<") setSpeed(speed - 0.25);
+});
+setSpeed(speed);
 
 /* ---- chapters ---- */
 let chapters = [];
