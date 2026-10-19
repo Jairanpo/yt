@@ -3,8 +3,10 @@
 Kept at arm's length on purpose: yt-dlp updates often, and shelling out means
 `pip install -U yt-dlp` fixes extractor breakage without touching this code.
 """
+import functools
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -26,8 +28,22 @@ class YtdlpError(RuntimeError):
     pass
 
 
+@functools.cache
+def _js_runtime() -> list:
+    # YouTube hides its video addresses behind a puzzle written in JavaScript,
+    # and yt-dlp needs a JavaScript engine to solve it; without one it falls
+    # back to fewer, flakier ways in. It only looks for deno by itself, so
+    # point it at Node when that is what this machine has.
+    if shutil.which("deno"):
+        return []
+    node = shutil.which("node")
+    return ["--js-runtimes", f"node:{node}"] if node else []
+
+
 def base_cmd(cfg: dict) -> list:
-    return [cfg["ytdlp"], "--ignore-config", "--no-warnings", *cfg.get("ytdlp_args", [])]
+    extra = cfg.get("ytdlp_args", [])
+    js = [] if "--js-runtimes" in extra else _js_runtime()
+    return [cfg["ytdlp"], "--ignore-config", "--no-warnings", *js, *extra]
 
 
 def check(cfg: dict) -> str:
