@@ -1146,7 +1146,7 @@ async function togglPoll() {
 function togglMount(v) {
   togglUnmount();
   if (!tgReady) return;
-  const m = state.toggl[v.channel] || {};
+  const m = state.toggl[(v.channel || "").trim()] || {};
   const el = document.createElement("div");
   el.id = "ptoggl";
   el.innerHTML = '<button id="tgbtn"></button><span id="tgwhat"></span>';

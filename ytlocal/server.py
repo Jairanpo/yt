@@ -272,7 +272,9 @@ class Handler(BaseHTTPRequestHandler):
                 row = db.get_video(self.conn, body.get("video") or "")
                 if not row:
                     return self._fail(404, "unknown video")
-                chan = row["channel_name"] or row["channel_handle"] or "unknown"
+                # Trimmed to match how the toggl sheet saved it: some channel
+                # names arrive from YouTube with a trailing space.
+                chan = (row["channel_name"] or row["channel_handle"] or "unknown").strip()
                 m = db.toggl_map(self.conn).get(chan, {})
                 tags = [t.strip() for t in (m.get("tags") or "").split(",") if t.strip()]
                 try:

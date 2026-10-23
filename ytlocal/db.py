@@ -882,8 +882,8 @@ def toggl_channels(conn) -> list:
     have not catalogued yet still deserves a row to fill in.
     """
     rows = conn.execute(
-        """SELECT DISTINCT CASE WHEN kind = 'channel' THEN name
-                                ELSE COALESCE(owner, name) END AS channel
+        """SELECT DISTINCT TRIM(CASE WHEN kind = 'channel' THEN name
+                                     ELSE COALESCE(owner, name) END) AS channel
              FROM sources WHERE COALESCE(CASE WHEN kind = 'channel' THEN name
                                               ELSE COALESCE(owner, name) END, '') <> ''
             ORDER BY channel COLLATE NOCASE""").fetchall()
