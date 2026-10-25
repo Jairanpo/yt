@@ -1096,7 +1096,12 @@ addEventListener("scroll", closeQualityMenu, {passive: true});
 
 /* ---- player ---- */
 let current = null, saveTimer = null;
+// Share of a video past which it counts as finished.
+const FINISHED = 0.92;
 function open_(v) {
+  // Resuming a finished video lands on its last frame, which fires "ended"
+  // and shuts the player straight away, so start those over instead.
+  const at = v.duration && v.progress / v.duration >= FINISHED ? 0 : v.progress || 0;
   current = v;
   const vid = $("#pvideo");
   vid.querySelectorAll("track").forEach(t => t.remove());
@@ -1112,13 +1117,13 @@ function open_(v) {
   $("#player").classList.add("on");
   if (v.have) {
     vid.src = `/media/${v.id}`;
-    vid.currentTime = v.progress || 0;
+    vid.currentTime = at;
     vid.play().catch(()=>{});
     attachSubs(v.id, vid);
     api(`/api/chapters/${v.id}`).then(d => showChapters(d.chapters, v.id))
                                 .catch(() => {});
   } else {
-    startStream(v, vid).catch(e => {
+    startStream({...v, progress: at}, vid).catch(e => {
       if (current?.id === v.id) streamStatus(`Couldn't stream: ${e.message}`);
     });
   }
@@ -1551,7 +1556,7 @@ async function attachSubs(id, vid) {
 // end counts as watched, since "ended" only fires on the very last frame.
 function markIfFinished(vid) {
   if (!current || current.watched || !vid.duration) return;
-  if (vid.currentTime / vid.duration < 0.92) return;
+  if (vid.currentTime / vid.duration < FINISHED) return;
   current.watched = true;
   post(`/api/watched/${current.id}`, {value: 1}).catch(()=>{});
 }
